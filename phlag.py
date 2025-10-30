@@ -285,8 +285,8 @@ def parse_arguments():
     hmm_group.add_argument("--emission-prior-concentration", type=float, default=1.1, help="Emission prior concentration (default: 1.1)")
 
     discr_group = parser.add_argument_group("Discretization and emission parameters")
-    discr_group.add_argument("--num-classes-min", type=int, default=4, help="Minimum number of classes (default: 4)")
-    discr_group.add_argument("--num-classes-max", type=int, default=32, help="Maximum number of classes (default: 32)")
+    discr_group.add_argument("--num-classes-min", type=int, default=8, help="Minimum number of classes (default: 8)")
+    discr_group.add_argument("--num-classes-max", type=int, default=64, help="Maximum number of classes (default: 64)")
     discr_group.add_argument("--ilr-transform", action="store_true", help="Apply isometric log-ratio transformation on QQS values")
 
     io_group = parser.add_argument_group("I/O options")
