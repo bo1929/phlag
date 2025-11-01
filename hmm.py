@@ -172,14 +172,14 @@ class PhlagHMMEmissions(HMMEmissions):
         emission_dim: Int,
         num_classes: Int,
         emission_similarity_penalty: Float,
-        emission_transfer_cost: Union[Scalar, Float[Array, "emission_dim num_classes num_classes"]] = 1,
+        emission_transfer_cost: list = None,  # Union[Scalar, Float[Array, "emission_dim num_classes num_classes"]] = 1,
         emission_prior_concentration: Union[Scalar, Float[Array, "num_classes"]] = 1.1,
     ):
         self.num_states = num_states
         self.emission_dim = emission_dim
         self.num_classes = num_classes
         self.similarity_penalty = emission_similarity_penalty
-        self.transfer_cost = emission_transfer_cost * jnp.ones((self.emission_dim, self.num_classes, self.num_classes))
+        self.transfer_cost = emission_transfer_cost  # * jnp.ones((self.emission_dim, self.num_classes, self.num_classes))
         self.prior_concentration = emission_prior_concentration * jnp.ones(self.num_classes)
 
     def set_emission_prior_concentration(self, emission_prior_concentration):
@@ -265,7 +265,7 @@ class PhlagHMMEmissions(HMMEmissions):
         Returns:
             jnp.ndarray: The MAP estimate for the unknown probabilities.
         """
-        k = self.num_classes
+        k = C.shape[0]
 
         def hellinger_distance(p, q):
             return jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0)
@@ -348,13 +348,18 @@ class PhlagHMMEmissions(HMMEmissions):
             # ).mode()
             probs = params.probs
             probs = probs.at[0].set(m_step_state)
-            probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(probs[0], (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
+            for i in range(len(self.transfer_cost)):
+                x = self.map_with_arbitrary(probs[0, i, : self.transfer_cost[i].shape[0]], emission_stats["sum_x"][1, i, : self.transfer_cost[i].shape[0]], self.transfer_cost[i])
+                probs = probs.at[1, i, : self.transfer_cost[i].shape[0]].set(x)
             params = params._replace(probs=probs)
         return params, m_step_state
 
     def probs_dissimilarity(self, params):
         probs = params.probs
-        return jax.vmap(wasserstein_distance, in_axes=(0, 0, 0), out_axes=0)(probs[0], probs[1], self.transfer_cost)
+        dist = []
+        for i in range(len(self.transfer_cost)):
+            dist.append(wasserstein_distance(probs[0, i, : self.transfer_cost[i].shape[0]], probs[1, i, : self.transfer_cost[i].shape[0]], self.transfer_cost[i]))
+        return dist
 
 
 class ParamsPhlagHMM(NamedTuple):
@@ -384,7 +389,7 @@ class PhlagHMM(HMM):
         num_classes: Int = 2,
         emission_similarity_penalty: Scalar = 0.001,
         emission_prior_concentration: Union[Scalar, Float[Array, "num_classes"]] = 1.1,
-        emission_transfer_cost: Union[Float[Array, "emission_dim num_classes num_classes"]] = 1,
+        emission_transfer_cost: list = None,  # Union[Float[Array, "emission_dim num_classes num_classes"]] = 1,
         initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
         transition_matrix_concentration: Union[Scalar, Float[Array, "num_states num_states"]] = 1.1,
     ):

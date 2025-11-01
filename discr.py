@@ -11,6 +11,7 @@ from sklearn.metrics import silhouette_samples, silhouette_score
 
 PEPS = 1e-3
 PCOUNT = 1
+PSEUDO_COST = 10
 
 
 class Discretization:
@@ -88,45 +89,41 @@ class ClusterDiscretization(Discretization):
         assert len(self.f) > 0
         assert range_classes[0] < range_classes[1]
         assert range_classes[0] > 1
-        best_num_classes, best_sill_avg = range_classes[0], -1 + 1e-5
-        j = range_classes[0]
+        self.num_classes = range_classes[0]
         range_max = range_classes[1] + int(math.sqrt(range_classes[1]))
-        while j < range_max:
-            sill_avg = 0
-            for i in range(len(self.f)):
+        for i in range(len(self.f)):
+            best_num_classes, sill_best = range_classes[0], -1 + 1e-5
+            j = range_classes[0]
+            while j < range_max:
+                sill_curr = 0
                 self.f[i].set_params(n_clusters=j)
                 pred = self.f[i].fit_predict(data[:, i, :])
-                # if jnp.unique(pred).shape[0] == j:
-                if jnp.unique(pred).shape[0] == j:  # TODO: Remove this!
-                    sill_avg += silhouette_score(data[:, i, :], pred)
+                if jnp.unique(pred).shape[0] == j:
+                    sill_curr = silhouette_score(data[:, i, :], pred)
                 else:
-                    sill_avg += 0  # TODO: or should we return -1?
-            # if jnp.unique(pred).shape[0] != j: # TODO: Remove this!
-            #     break
-            sill_avg /= len(self.f)
-            if sill_avg >= best_sill_avg:
-                best_sill_avg = sill_avg
-                best_num_classes = j
-            if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
-                break
-            print(f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr)
-            j += int(math.sqrt(j))
-        print(f"Best: {best_num_classes} classes, the avg. silhouette score: {best_sill_avg}", file=sys.stderr)
-        self.num_classes = best_num_classes
-        for i in range(len(self.f)):
-            self.f[i].set_params(n_clusters=self.num_classes)
+                    sill_curr = 0  # TODO: or should we return -1?
+                if sill_curr >= sill_best:
+                    sill_best = sill_curr
+                    best_num_classes = j
+                if ((sill_curr) > 0.99) or (sill_curr < 1e-5):
+                    break
+                # print(f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr)
+                j += int(math.sqrt(j))
+            print(f"Best: {best_num_classes} classes for emission {i}, the avg. silhouette score: {sill_best}", file=sys.stderr)
+            self.f[i].set_params(n_clusters=best_num_classes)
+            self.num_classes = max(best_num_classes, self.num_classes)
 
     def pairwise_cluster_distances(self):
-        pw_dist = []
+        pwd = []
         for i in range(self.emission_dim):
-            pwd = []
-            for j in range(self.num_classes):
-                pwd_i = []
-                for k in range(self.num_classes):
-                    pwd_i.append(math.sqrt(sum((self.f[i].cluster_centers_[j, :] - self.f[i].cluster_centers_[k, :]) ** 2)))
-                pwd.append(pwd_i)
-            pw_dist.append(pwd)
-        return pw_dist
+            tnc = self.cl[i][0].shape[0]
+            pwd_i = jnp.zeros((tnc, tnc))
+            for j in range(tnc):
+                for k in range(tnc):
+                    d = math.sqrt(sum((self.f[i].cluster_centers_[j, :] - self.f[i].cluster_centers_[k, :]) ** 2))
+                    pwd_i = pwd_i.at[j, k].set(d)
+            pwd.append(pwd_i)
+        return pwd
 
     def discretize_obs(self, obs):
         assert len(self.cl) == self.emission_dim

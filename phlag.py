@@ -115,14 +115,13 @@ class Phlag:
         self.psi = self.psi.at[0, 1].set(self.beta_0)
         self.psi = self.psi.at[-1, -1].set(self.alpha_1)
         self.psi = self.psi.at[-1, 0].set(self.beta_1)
-        pwdist = jnp.array(self.discr.pairwise_cluster_distances())
         self.hmm = hmm.PhlagHMM(
             NUM_STATES,
             self.num_clades,
             self.num_classes,
             emission_similarity_penalty=self.lambd,
             emission_prior_concentration=self.gamma,
-            emission_transfer_cost=pwdist,
+            emission_transfer_cost=self.discr.pairwise_cluster_distances(),
             initial_probs_concentration=self.nu,
             transition_matrix_concentration=self.psi + PSI_EPS,
         )
@@ -244,7 +243,7 @@ class Phlag:
 
     def save_output(self):
         branch_lengths = ", ".join([label + ": " + str(self.label_to_node[label].get_edge_length()) for label in self.clade_labels])
-        kldiv_str = ", ".join(list(map(lambda x: str(x), self.hmm.emission_dissimilarity(self.params).tolist())))
+        kldiv_str = ", ".join(list(map(lambda x: str(x), self.hmm.emission_dissimilarity(self.params))))
         most_likely_states = self.hmm.most_likely_states(self.params, self.observed_emissions)
         ps = self.hmm.smoother(self.params, self.observed_emissions).smoothed_probs[:, 1]
         self.output_str += "\n# " + self.species_tree.newick()
@@ -285,8 +284,8 @@ def parse_arguments():
     hmm_group.add_argument("--emission-prior-concentration", type=float, default=1.1, help="Emission prior concentration (default: 1.1)")
 
     discr_group = parser.add_argument_group("Discretization and emission parameters")
-    discr_group.add_argument("--num-classes-min", type=int, default=8, help="Minimum number of classes (default: 8)")
-    discr_group.add_argument("--num-classes-max", type=int, default=64, help="Maximum number of classes (default: 64)")
+    discr_group.add_argument("--num-classes-min", type=int, default=3, help="Minimum number of classes (default: 3)")
+    discr_group.add_argument("--num-classes-max", type=int, default=81, help="Maximum number of classes (default: 81)")
     discr_group.add_argument("--ilr-transform", action="store_true", help="Apply isometric log-ratio transformation on QQS values")
 
     io_group = parser.add_argument_group("I/O options")
