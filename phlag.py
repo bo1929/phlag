@@ -126,7 +126,7 @@ class Phlag:
             initial_probs_concentration=self.nu,
             transition_matrix_concentration=self.psi + PSI_EPS,
         )
-        self.params, self.props = self.hmm.initialize(key=jr.PRNGKey(7), initial_probs=INITIAL_PROBS)
+        self.params, self.props = self.hmm.initialize(initial_probs=INITIAL_PROBS)
         self.props.emissions.probs.trainable = True
         self.props.transitions.transition_matrix.trainable = True
         self.props.initial.probs.trainable = True
