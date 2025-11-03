@@ -343,11 +343,11 @@ class PhlagHMMEmissions(HMMEmissions):
         """Perform the m-step for the emission distribution."""
         if props.probs.trainable:
             emission_stats = pytree_sum(batch_stats, axis=0)
-            # probs = tfd.Dirichlet(
-            #     self.prior_concentration + emission_stats["sum_x"]
-            # ).mode()
             probs = params.probs
-            probs = probs.at[0].set(m_step_state)
+            if m_step_state is None:
+                probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
+            else:
+                probs = probs.at[0].set(m_step_state)
             probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(probs[0], (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
             params = params._replace(probs=probs)
         return params, m_step_state
