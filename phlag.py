@@ -130,7 +130,7 @@ class Phlag:
         self.props.emissions.probs.trainable = True
         self.props.transitions.transition_matrix.trainable = True
         self.props.initial.probs.trainable = True
-        # self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
+        self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
 
         self.num_iters = self.args.num_iters
 
@@ -258,7 +258,7 @@ class Phlag:
     @timeit
     def run(self):
         for i in tqdm(range(self.num_iters)):
-            num_iters = 100  # (i + 1) * 10
+            num_iters = 50  # (i + 1) * 10
             self.params, log_probs = self.hmm.fit_em(self.params, self.props, self.observed_emissions, num_iters=num_iters, verbose=False)
             self.propose_simulated_emissions()
             self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
