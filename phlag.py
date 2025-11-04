@@ -143,22 +143,23 @@ class Phlag:
         discr_curr.fit_discretization(freqs_masked)
         return entropy(discr_curr.compute_null_emission_prob(freqs_masked)[0, :], base=2)
 
-    @timeit
-    def select_best_clade(self, tree):
-        nd_l, entropy_l = [], []
-        for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
-            if (nd.label not in self.label_to_freqs) or nd.is_root() or (nd.get_parent() is None):
-                continue
-            ent = self.compute_discretized_entropy(self.label_to_freqs[nd.label])
-            if utils.is_float(ent):
-                nd_l.append(nd)
-                entropy_l.append(ent)
-        if not nd_l:
-            best_clade = None
-        else:
-            best_idx = jnp.argmax(jnp.array(entropy_l))
-            best_clade = nd_l[best_idx].label
-        return best_clade
+    # @timeit
+    # def select_best_clade(self, tree):
+    #     nd_l, entropy_l = [], []
+    #     for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
+    #         if (nd.label not in self.label_to_freqs) or nd.is_root() or (nd.get_parent() is None):
+    #             continue
+
+    #         ent = self.compute_discretized_entropy(self.label_to_freqs[nd.label])
+    #         if utils.is_float(ent):
+    #             nd_l.append(nd)
+    #             entropy_l.append(ent)
+    #     if not nd_l:
+    #         best_clade = None
+    #     else:
+    #         best_idx = jnp.argmax(jnp.array(entropy_l))
+    #         best_clade = nd_l[best_idx].label
+    #     return best_clade
 
     @timeit
     def select_clades(self, num_clades):
@@ -170,6 +171,41 @@ class Phlag:
             selected_clades = [self.select_best_clade(tree) for tree in partitions if tree.num_nodes(leaves=True, internal=False) > 1]
             selected_clades = [label for label in selected_clades if label is not None]
         return selected_clades
+
+    def get_bp(self, clade_label):
+        obs = []
+        clbl_s = set([nd.label for nd in self.label_to_node[clade_label].traverse_leaves()])
+        p_nd = self.label_to_node[clade_label].get_parent()
+
+        for nd in p_nd.child_nodes():
+            if nd.label != clade_label:
+                tlbl = nd.label
+
+        for ix in range(self.gc):
+            glbl_s = [nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()]
+            if tlbl in glbl_s:
+                obs.append(1)
+            else:
+                obs.append(0)
+        return jnp.array(obs)
+
+    def select_best_clade(self, tree):
+        nd_l, entropy_l = [], []
+        for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
+            if (not (self.label_to_node.get(nd.label, ""))) or nd.is_root() or (nd.get_parent() is None):
+                continue
+            obs = self.get_bp(nd.label)
+            p = sum(obs) / len(obs)
+            ent = entropy([p, 1 - p], base=2)
+            if is_float(ent):
+                nd_l.append(nd)
+                entropy_l.append(ent)
+        if not nd_l:
+            best_clade = None
+        else:
+            best_idx = jnp.argmax(jnp.array(entropy_l))
+            best_clade = nd_l[best_idx].label
+        return best_clade
 
     def read_qqs_freqs(self, path):
         with open(path, "r") as f:
