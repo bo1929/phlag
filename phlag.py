@@ -272,7 +272,7 @@ def parse_arguments():
     parser.add_argument("-g", "--gene-trees", type=pathlib.Path, required=True, help="Path to file for ordered gene trees (one Newick tree per line)")
     parser.add_argument("-c", "--clade-labels", nargs="*", type=str, help="Specific clade labels to analyze (auto-selected if not provided)")
     parser.add_argument("--num-clades", type=int, default=3, help="Minimum number of clades to automatically select (default: 3)")
-    parser.add_argument("--num-reps", type=int, default=2000, help="Number of simulation replicates (default: 1000)")
+    parser.add_argument("--num-reps", type=int, default=2000, help="Number of simulation replicates (default: 2000)")
     parser.add_argument("--num-iters", type=int, default=10, help="Number of EM iterations (default: 100)")
     parser.add_argument("-o", "--output-file", type=pathlib.Path, required=True, help="Path to output file")
     parser.add_argument("-v", "--verbosity", type=int, default=1, choices=[0, 1, 2, 3], help="Verbosity level: 0=quiet, 1=normal, 2=verbose, 3=debug (default: 1)")
