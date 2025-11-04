@@ -253,7 +253,7 @@ class PhlagHMMEmissions(HMMEmissions):
         """Initialize the m-step state."""
         return None
 
-    def map_with_arbitrary(self, emission_0, counts_1, C=None):
+    def map_with_arbitrary(self, emission_0, counts_1, C=None, dr=False):
         """
         Computes the MAP estimate for a categorical distribution by maximizing the posterior with emission similarity penalty.
         This version optimizes unconstrained logits and uses the softmax trick.
@@ -293,8 +293,20 @@ class PhlagHMMEmissions(HMMEmissions):
             neg_log_prior = -self.similarity_penalty * fdist(emission_1, emission_0)
             return neg_log_likelihood + neg_log_prior
 
-        initial_logits = jnp.ones(k) / k
-        result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        def drneg_log_posterior(logits):
+            # Convert logits to a valid probability distribution using softmax
+            emission_1 = softmax(logits)
+            # Negative log-likelihood (from multinomial distribution).
+            neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
+            # Negative log-prior without the normalization factor
+            neg_log_prior = self.similarity_penalty * fdist(emission_1, emission_0)
+            return neg_log_likelihood + neg_log_prior
+
+        initial_logits = emission_0
+        if not dr:
+            result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        else:
+            result = minimize(fun=drneg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
         # Notice that this is not bounded (hence softmax is needed)
         return softmax(result.x)
 
@@ -344,11 +356,9 @@ class PhlagHMMEmissions(HMMEmissions):
         if props.probs.trainable:
             emission_stats = pytree_sum(batch_stats, axis=0)
             probs = params.probs
-            if m_step_state is None:
-                probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
-            else:
-                probs = probs.at[0].set(m_step_state)
-            probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(probs[0], (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
+            # probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
+            probs = probs.at[0].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[0], self.transfer_cost))
+            probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(m_step_staet, (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
             params = params._replace(probs=probs)
         return params, m_step_state
 
