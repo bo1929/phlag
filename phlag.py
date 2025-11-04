@@ -33,9 +33,9 @@ IntScalar = Union[int, Int[Array, ""]]
 NUM_STATES = 2
 INITIAL_PROBS = jnp.array([0.9999, 0.0001], dtype=jnp.float32)
 BRANCH_LENGTH_LAMBDA = 0.5
-MIN_BRANCH_LENGTH = 1e-6
+MIN_BRANCH_LENGTH = 1e-3
 
-E_STEP_EPS = 0.01
+E_STEP_EPS = 0.001
 PSI_EPS = 0.1
 
 
@@ -197,7 +197,7 @@ class Phlag:
             obs = self.get_bp(nd.label)
             p = sum(obs) / len(obs)
             ent = entropy([p, 1 - p], base=2)
-            if is_float(ent):
+            if utils.is_float(ent):
                 nd_l.append(nd)
                 entropy_l.append(ent)
         if not nd_l:

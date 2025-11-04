@@ -253,6 +253,63 @@ class PhlagHMMEmissions(HMMEmissions):
         """Initialize the m-step state."""
         return None
 
+    def map_with_arbitraryx(self, emission_0, counts_1, C=None, dr=True):
+        """
+        Computes the MAP estimate for a categorical distribution by maximizing the posterior with emission similarity penalty.
+        This version optimizes unconstrained logits and uses the softmax trick.
+
+        Args:
+            emission_0 (jnp.ndarray): Array of probabilities for the known normal emission distribution.
+            counts_1 (jnp.ndarray): Array of expected observed counts from the anomalous state.
+
+        Returns:
+            jnp.ndarray: The MAP estimate for the unknown probabilities.
+        """
+        k = self.num_classes
+
+        def hellinger_distance(p, q):
+            return jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0)
+
+        def kl_divergence(p, q):
+            return jnp.sum(kl_div(p + 1e-10, q + 1e-10))
+
+        def total_variation_distance(p, q):
+            return 0.5 * jnp.sum(jnp.abs(p - q))
+
+        def l2(p, q):
+            return jnp.sqrt(jnp.sum((p - q) ** 2))
+
+        def fdist(emission_0, emission_1):
+            # return total_variation_distance(emission_1, emission_0)
+            # return kl_divergence(emission_1, emission_0)
+            return wasserstein_distance(emission_1, emission_0, C)
+
+        def neg_log_posterior(logits):
+            # Convert logits to a valid probability distribution using softmax
+            emission_1 = softmax(logits)
+            # Negative log-likelihood (from multinomial distribution).
+            neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
+            # Negative log-prior without the normalization factor
+            neg_log_prior = -self.similarity_penalty * fdist(emission_1, emission_0)
+            return neg_log_likelihood + neg_log_prior
+
+        def drneg_log_posterior(logits):
+            # Convert logits to a valid probability distribution using softmax
+            emission_1 = softmax(logits)
+            # Negative log-likelihood (from multinomial distribution).
+            neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
+            # Negative log-prior without the normalization factor
+            neg_log_prior = self.similarity_penalty * fdist(emission_1, emission_0)
+            return neg_log_likelihood + neg_log_prior
+
+        initial_logits = emission_0
+        if not dr:
+            result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        else:
+            result = minimize(fun=drneg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        # Notice that this is not bounded (hence softmax is needed)
+        return softmax(result.x)
+
     def map_with_arbitrary(self, emission_0, counts_1, C=None, dr=False):
         """
         Computes the MAP estimate for a categorical distribution by maximizing the posterior with emission similarity penalty.
@@ -357,7 +414,7 @@ class PhlagHMMEmissions(HMMEmissions):
             emission_stats = pytree_sum(batch_stats, axis=0)
             probs = params.probs
             # probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
-            probs = probs.at[0].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[0], self.transfer_cost))
+            probs = probs.at[0].set(jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[0], self.transfer_cost))
             probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
             params = params._replace(probs=probs)
         return params, m_step_state
