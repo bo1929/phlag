@@ -54,6 +54,28 @@ IntScalar = Union[int, Int[Array, ""]]
 #     return W  # / jnp.max(C)
 
 
+def hellinger_distance(p, q):
+    return jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0)
+
+
+def kl_divergence(p, q):
+    return jnp.sum(kl_div(p + 1e-10, q + 1e-10))
+
+
+def total_variation_distance(p, q):
+    return 0.5 * jnp.sum(jnp.abs(p - q))
+
+
+def l2(p, q):
+    return jnp.sqrt(jnp.sum((p - q) ** 2))
+
+
+def fdist(emission_0, emission_1):
+    # return total_variation_distance(emission_1, emission_0)
+    return hellinger_distance(emission_1, emission_0)
+    # return wasserstein_distance(emission_1, emission_0, C)
+
+
 def wasserstein_distance(p, q, C, lam=100.0, lr=0.1, n_iter=50):
     K = C.shape[0]
     T = jnp.ones((K, K)) / K**2
@@ -113,13 +135,13 @@ class PhlagHMMTransitions(HMMTransitions):
             if key is None:
                 raise ValueError("A key must be provided if transition_matrix is not provided.")
             else:
-                if method == "prior":
-                    tm_sample = tfd.Dirichlet(self.concentration).sample(seed=key)
-                elif method == "random":
-                    random_concentration = jnp.ones(self.concentration.shape) * 1.1
-                    tm_sample = tfd.Dirichlet(random_concentration).sample(seed=key)
-                else:
-                    raise ValueError("method must be either 'prior' or 'random'.")
+                # if method == "prior":
+                tm_sample = tfd.Dirichlet(self.concentration).sample(seed=key)
+                # elif method == "random":
+                #     random_concentration = jnp.ones(self.concentration.shape) * 1.1
+                #     tm_sample = tfd.Dirichlet(random_concentration).sample(seed=key)
+                # else:
+                #     raise ValueError("method must be either 'prior' or 'random'.")
                 transition_matrix = cast(Float[Array, "num_states num_states"], tm_sample)
         params = ParamsStandardHMMTransitions(transition_matrix=transition_matrix)
         props = ParamsStandardHMMTransitions(transition_matrix=ParameterProperties(constrainer=tfb.SoftmaxCentered()))
@@ -151,6 +173,8 @@ class PhlagHMMTransitions(HMMTransitions):
             else:
                 expected_trans_counts = batch_stats.sum(axis=0)
                 transition_matrix = tfd.Dirichlet(self.concentration + expected_trans_counts).mode()
+            jax.debug.print("TT {bar}", bar=transition_matrix)
+            jax.debug.print("ET {bar}", bar=expected_trans_counts)
             params = params._replace(transition_matrix=transition_matrix)
         return params, m_step_state
 
@@ -232,7 +256,8 @@ class PhlagHMMEmissions(HMMEmissions):
         else:
             assert emission_probs.shape == (self.num_states, self.emission_dim, self.num_classes)
             assert jnp.all(emission_probs >= 0)
-            assert jnp.allclose(emission_probs.sum(axis=2), 1.0)
+            print(emission_probs.sum(axis=2))
+            # assert jnp.allclose(emission_probs.sum(axis=2), 1.0)
 
         # Add parameters to the dictionary
         params = ParamsCategoricalHMMEmissions(probs=emission_probs)
@@ -267,33 +292,7 @@ class PhlagHMMEmissions(HMMEmissions):
         """
         k = self.num_classes
 
-        def hellinger_distance(p, q):
-            return jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0)
-
-        def kl_divergence(p, q):
-            return jnp.sum(kl_div(p + 1e-10, q + 1e-10))
-
-        def total_variation_distance(p, q):
-            return 0.5 * jnp.sum(jnp.abs(p - q))
-
-        def l2(p, q):
-            return jnp.sqrt(jnp.sum((p - q) ** 2))
-
-        def fdist(emission_0, emission_1):
-            # return total_variation_distance(emission_1, emission_0)
-            # return kl_divergence(emission_1, emission_0)
-            return wasserstein_distance(emission_1, emission_0, C)
-
         def neg_log_posterior(logits):
-            # Convert logits to a valid probability distribution using softmax
-            emission_1 = softmax(logits)
-            # Negative log-likelihood (from multinomial distribution).
-            neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
-            # Negative log-prior without the normalization factor
-            neg_log_prior = -self.similarity_penalty * fdist(emission_1, emission_0)
-            return neg_log_likelihood + neg_log_prior
-
-        def drneg_log_posterior(logits):
             # Convert logits to a valid probability distribution using softmax
             emission_1 = softmax(logits)
             # Negative log-likelihood (from multinomial distribution).
@@ -303,14 +302,11 @@ class PhlagHMMEmissions(HMMEmissions):
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
-        if not dr:
-            result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
-        else:
-            result = minimize(fun=drneg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
         # Notice that this is not bounded (hence softmax is needed)
         return softmax(result.x)
 
-    def map_with_arbitrary(self, emission_0, counts_1, C=None, dr=False):
+    def map_with_arbitrary(self, emission_0, counts_1, C=None):
         """
         Computes the MAP estimate for a categorical distribution by maximizing the posterior with emission similarity penalty.
         This version optimizes unconstrained logits and uses the softmax trick.
@@ -324,46 +320,17 @@ class PhlagHMMEmissions(HMMEmissions):
         """
         k = self.num_classes
 
-        def hellinger_distance(p, q):
-            return jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0)
-
-        def kl_divergence(p, q):
-            return jnp.sum(kl_div(p + 1e-10, q + 1e-10))
-
-        def total_variation_distance(p, q):
-            return 0.5 * jnp.sum(jnp.abs(p - q))
-
-        def l2(p, q):
-            return jnp.sqrt(jnp.sum((p - q) ** 2))
-
-        def fdist(emission_0, emission_1):
-            # return total_variation_distance(emission_1, emission_0)
-            # return kl_divergence(emission_1, emission_0)
-            return wasserstein_distance(emission_1, emission_0, C)
-
         def neg_log_posterior(logits):
             # Convert logits to a valid probability distribution using softmax
             emission_1 = softmax(logits)
             # Negative log-likelihood (from multinomial distribution).
             neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
             # Negative log-prior without the normalization factor
-            neg_log_prior = -self.similarity_penalty * fdist(emission_1, emission_0)
-            return neg_log_likelihood + neg_log_prior
-
-        def drneg_log_posterior(logits):
-            # Convert logits to a valid probability distribution using softmax
-            emission_1 = softmax(logits)
-            # Negative log-likelihood (from multinomial distribution).
-            neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
-            # Negative log-prior without the normalization factor
-            neg_log_prior = self.similarity_penalty * fdist(emission_1, emission_0)
+            neg_log_prior = self.similarity_penalty * (1 - fdist(emission_1, emission_0))
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
-        if not dr:
-            result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
-        else:
-            result = minimize(fun=drneg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
         # Notice that this is not bounded (hence softmax is needed)
         return softmax(result.x)
 
@@ -414,9 +381,12 @@ class PhlagHMMEmissions(HMMEmissions):
             emission_stats = pytree_sum(batch_stats, axis=0)
             probs = params.probs
             # probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
-            probs = probs.at[0].set(jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[0], self.transfer_cost))
+            jax.debug.print("bfore {bar}", bar=probs)
+            jax.debug.print("em {bar}", bar=emission_stats["sum_x"])
             probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
+            probs = probs.at[0].set(jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[0], self.transfer_cost))
             params = params._replace(probs=probs)
+            jax.debug.print("after {bar}", bar=probs)
         return params, m_step_state
 
     def probs_dissimilarity(self, params):
@@ -510,7 +480,7 @@ class PhlagHMM(HMM):
         params["emissions"], props["emissions"] = self.emission_component.initialize(key3, method=method, emission_probs=emission_probs)
         return ParamsPhlagHMM(**params), ParamsPhlagHMM(**props)
 
-    @timeit
+    # @timeit
     def initialize_m_step_state(self, params: HMMParameterSet, props: HMMPropertySet, initial_m_step_state=None, transitions_m_step_state=None, emissions_m_step_state=None):
         """Initialize any required state for the M step.
         For example, this might include the optimizer state for Adam.
@@ -538,17 +508,36 @@ class PhlagHMM(HMM):
     #     return self.posterior
 
     # @timeit
-    # def e_step(self, params: HMMParameterSet, emissions: Array, inputs: Optional[Float[Array, "num_timesteps input_dim"]] = None) -> Tuple[PyTree, Scalar]:
-    #     """The E-step computes expected sufficient statistics under the
-    #     posterior. In the generic case, we simply return the posterior itself.
-    #     """
-    #     args = self._inference_args(params, emissions, inputs)
-    #     self.posterior = hmm_two_filter_smoother(*args)
+    def e_step(self, params: HMMParameterSet, emissions: Array, inputs: Optional[Float[Array, "num_timesteps input_dim"]] = None) -> Tuple[PyTree, Scalar]:
+        """The E-step computes expected sufficient statistics under the
+        posterior. In the generic case, we simply return the posterior itself.
+        """
+        jax.debug.print("params {bar}", bar=params)
+        args = self._inference_args(params, emissions, inputs)
+        posterior = hmm_two_filter_smoother(*args)
 
-    #     initial_stats = self.initial_component.collect_suff_stats(params.initial, self.posterior, inputs)
-    #     transition_stats = self.transition_component.collect_suff_stats(params.transitions, self.posterior, inputs)
-    #     emission_stats = self.emission_component.collect_suff_stats(params.emissions, self.posterior, emissions, inputs)
-    #     return (initial_stats, transition_stats, emission_stats), self.posterior.marginal_loglik
+        jax.debug.print("Posterior {bar}", bar=posterior)
+
+        initial_stats = self.initial_component.collect_suff_stats(params.initial, posterior, inputs)
+        transition_stats = self.transition_component.collect_suff_stats(params.transitions, posterior, inputs)
+        emission_stats = self.emission_component.collect_suff_stats(params.emissions, posterior, emissions, inputs)
+        return (initial_stats, transition_stats, emission_stats), posterior.marginal_loglik
 
     def emission_dissimilarity(self, params):
         return self.emission_component.probs_dissimilarity(params.emissions)
+
+    def m_step(self, params: HMMParameterSet, props: HMMPropertySet, batch_stats: PyTree, m_step_state: Any) -> Tuple[HMMParameterSet, Any]:
+        """
+        Perform an M-step on the model parameters.
+        """
+        batch_initial_stats, batch_transition_stats, batch_emission_stats = batch_stats
+        initial_m_step_state, transitions_m_step_state, emissions_m_step_state = m_step_state
+
+        jax.debug.print("STATS {bar}", bar=batch_stats)
+
+        initial_params, initial_m_step_state = self.initial_component.m_step(params.initial, props.initial, batch_initial_stats, initial_m_step_state)
+        transition_params, transitions_m_step_state = self.transition_component.m_step(params.transitions, props.transitions, batch_transition_stats, transitions_m_step_state)
+        emission_params, emissions_m_step_state = self.emission_component.m_step(params.emissions, props.emissions, batch_emission_stats, emissions_m_step_state)
+        params = params._replace(initial=initial_params, transitions=transition_params, emissions=emission_params)
+        m_step_state = initial_m_step_state, transitions_m_step_state, emissions_m_step_state
+        return params, m_step_state

@@ -15,6 +15,7 @@ from scipy.stats import entropy
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 from skbio.stats.composition import ilr, multi_replace
+import tensorflow_probability.substrates.jax.distributions as tfd
 
 from jaxtyping import Array, Float, Int
 from typing import Union
@@ -31,7 +32,7 @@ Scalar = Union[float, Float[Array, ""]]
 IntScalar = Union[int, Int[Array, ""]]
 
 NUM_STATES = 2
-INITIAL_PROBS = jnp.array([0.9999, 0.0001], dtype=jnp.float32)
+INITIAL_PROBS = jnp.array([1.0000, 0.0000], dtype=jnp.float32)
 BRANCH_LENGTH_LAMBDA = 0.5
 MIN_BRANCH_LENGTH = 1e-3
 
@@ -91,8 +92,9 @@ class Phlag:
         self.observed_freqs = self.transform_freqs(jnp.stack(observed_freqs, axis=1)[self.mask, :, :])
 
         # Initialize the discretization function and select the best number of classes for categorical emissions
-        self.discr = discr.KMeansDiscretization(self.observed_freqs.shape[1], self.observed_freqs.shape[2], self.num_classes_max)
-        self.discr.choose_num_classes(self.observed_freqs, range_classes=(self.num_classes_min, self.num_classes_max))
+        # self.discr = discr.KMeansDiscretization(self.observed_freqs.shape[1], self.observed_freqs.shape[2], self.num_classes_max)
+        self.discr = discr.KMeansDiscretization(self.observed_freqs.shape[1], self.observed_freqs.shape[2], 3)
+        # self.discr.choose_num_classes(self.observed_freqs, range_classes=(self.num_classes_min, self.num_classes_max))
         self.num_classes = self.discr.get_num_classes()
         self.discr.fit_discretization(self.observed_freqs)
         self.observed_emissions = self.discr.discretize_obs(self.observed_freqs)
@@ -101,6 +103,8 @@ class Phlag:
         self.num_reps = self.args.num_reps
         simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
         self.simulated_emission_prob = self.discr.compute_null_emission_prob(self.transform_freqs(simulated_freqs))
+        jax.debug.print("hello sim {bar}", bar=self.simulated_emission_prob)
+        jax.debug.print("hello obs {bar}", bar=self.discr.compute_null_emission_prob(self.observed_freqs))
 
         # Initialize the HMM, adjusting given hyperparameters based on the sequence length (the number of gene trees)
         self.alpha_0 = self.gc * (1 - self.args.expected_anamoly_proportion) - self.args.expected_num_anamolies
@@ -116,6 +120,11 @@ class Phlag:
         self.psi = self.psi.at[-1, -1].set(self.alpha_1)
         self.psi = self.psi.at[-1, 0].set(self.beta_1)
         pwdist = jnp.array(self.discr.pairwise_cluster_distances())
+
+        self.prior_concentration = self.gamma * jnp.ones(self.num_classes)
+        prior = tfd.Dirichlet(self.prior_concentration)
+        alt_emission_probs = prior.sample(seed=jr.PRNGKey(0), sample_shape=(self.num_clades))
+        jax.debug.print("T {bar}", bar=self.psi)
         self.hmm = hmm.PhlagHMM(
             NUM_STATES,
             self.num_clades,
@@ -126,10 +135,11 @@ class Phlag:
             initial_probs_concentration=self.nu,
             transition_matrix_concentration=self.psi + PSI_EPS,
         )
-        self.params, self.props = self.hmm.initialize(initial_probs=INITIAL_PROBS)
+        x = jnp.stack([self.simulated_emission_prob, alt_emission_probs], axis=0)
+        self.params, self.props = self.hmm.initialize(initial_probs=INITIAL_PROBS, emission_probs=x)
         self.props.emissions.probs.trainable = True
         self.props.transitions.transition_matrix.trainable = True
-        self.props.initial.probs.trainable = True
+        self.props.initial.probs.trainable = False
         self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
 
         self.num_iters = self.args.num_iters
@@ -259,7 +269,7 @@ class Phlag:
                 x.append(ilr(multi_replace(freqs[:, i, :], delta=1e-5)))
             return jnp.stack(x, axis=1)
         else:
-            return freqs[:, :, :2]
+            return freqs[:, :, :]
 
     @timeit
     def propose_simulated_emissions(self):
@@ -294,7 +304,7 @@ class Phlag:
     @timeit
     def run(self):
         for i in tqdm(range(self.num_iters)):
-            num_iters = 50  # (i + 1) * 10
+            num_iters = 100  # (i + 1) * 10
             self.params, log_probs = self.hmm.fit_em(self.params, self.props, self.observed_emissions, num_iters=num_iters, verbose=False)
             self.propose_simulated_emissions()
             self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
@@ -316,7 +326,7 @@ def parse_arguments():
     hmm_group = parser.add_argument_group("HMM parameters")
     hmm_group.add_argument("--expected-anamoly-proportion", type=float, default=0.1, help="Hyperparameter to control transition matrix and portion of the anomalies (default 0.1)")
     hmm_group.add_argument("--expected-num-anamolies", type=float, default=2, help="Hyperparameter to control transition matrix and contiguity of the anomalies (default 10)")
-    hmm_group.add_argument("--emission-simlarity-penalty", type=float, default=0.05, help="Hyperparameter to control deviation of anomalies from MSC (default: 0.05)")
+    hmm_group.add_argument("--emission-simlarity-penalty", type=float, default=0.001, help="Hyperparameter to control deviation of anomalies from MSC (default: 0.05)")
     hmm_group.add_argument("--initial-probs-concentration", type=float, default=1.1, help="Initial probabilities concentration (default: 1.1)")
     hmm_group.add_argument("--emission-prior-concentration", type=float, default=1.1, help="Emission prior concentration (default: 1.1)")
 

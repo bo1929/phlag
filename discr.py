@@ -9,7 +9,7 @@ from jaxtyping import Array, Float
 from sklearn.metrics import silhouette_samples, silhouette_score
 
 
-PEPS = 1e-3
+PEPS = 1e-5
 PCOUNT = 1
 
 
@@ -132,7 +132,8 @@ class ClusterDiscretization(Discretization):
         assert len(self.cl) == self.emission_dim
         obsd = jnp.zeros((obs.shape[0], self.emission_dim))
         for i in range(self.emission_dim):
-            obsd = obsd.at[:, i].set(lax.map(lambda x: jnp.argwhere(self.cl[i][0] == x, size=1)[0], self.f[i].predict(obs[:, i, :])).reshape(-1))
+            obsd = obsd.at[:, i].set(jnp.argmax(obs[:, i, :], axis=1))
+            # obsd = obsd.at[:, i].set(lax.map(lambda x: jnp.argwhere(self.cl[i][0] == x, size=1)[0], self.f[i].predict(obs[:, i, :])).reshape(-1))
             # obsd = obsd.at[:, i].set(self.f[i].predict(obs[:, i, :]))
         return obsd.astype(int)
 
@@ -154,6 +155,7 @@ class KMeansDiscretization(ClusterDiscretization):
             self.cl.append(c)
             curr_num_classes = c[0].shape[0]
             self.num_classes = curr_num_classes if i == 0 else max(self.num_classes, curr_num_classes)
+        self.num_classes = 3
 
     def compute_null_emission_prob(self, simulated_freqs: Float[Array, "_ emission_dim input_dim"]):
         assert simulated_freqs.shape[1] == self.emission_dim
