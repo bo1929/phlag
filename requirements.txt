@@ -1,0 +1,10 @@
+Cython==3.1.4
+dynamax==0.1.5
+jax==0.4.30
+jaxtyping==0.2.36
+numpy==2.0.2
+scipy==1.13.1
+tqdm==4.66.5
+treeswift==1.1.45
+scikit-learn==1.5.2
+scikit-bio==0.7.0
