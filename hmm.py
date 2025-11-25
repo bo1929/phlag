@@ -299,11 +299,15 @@ class PhlagHMMEmissions(HMMEmissions):
             neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
             # Negative log-prior without the normalization factor
             neg_log_prior = self.similarity_penalty * fdist(emission_1, emission_0)
+            jax.debug.print("prior0 {bar}", bar=neg_log_prior)
+            jax.debug.print("likelihood0 {bar}", bar=neg_log_likelihood)
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
         result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
         # Notice that this is not bounded (hence softmax is needed)
+        jax.debug.print("E0 {bar}", bar=softmax(result.x))
+        jax.debug.print("HDISTANCE {bar}", bar=fdist(softmax(result.x), emission_0))
         return softmax(result.x)
 
     def map_with_arbitrary(self, emission_0, counts_1, C=None):
@@ -327,11 +331,16 @@ class PhlagHMMEmissions(HMMEmissions):
             neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
             # Negative log-prior without the normalization factor
             neg_log_prior = self.similarity_penalty * (1 - fdist(emission_1, emission_0))
+            jax.debug.print("prior1 {bar}", bar=neg_log_prior)
+            jax.debug.print("likelihood1 {bar}", bar=neg_log_likelihood)
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
         result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
         # Notice that this is not bounded (hence softmax is needed)
+
+        jax.debug.print("E1 {bar}", bar=softmax(result.x))
+        jax.debug.print("HDISTANCE {bar}", bar=fdist(softmax(result.x), emission_0))
         return softmax(result.x)
 
     def map_with_lagrange(self, emission_0, counts_1, tol=1e-8, max_iter=1000):
@@ -512,11 +521,11 @@ class PhlagHMM(HMM):
         """The E-step computes expected sufficient statistics under the
         posterior. In the generic case, we simply return the posterior itself.
         """
-        jax.debug.print("params {bar}", bar=params)
+        # jax.debug.print("EMISSIONS {e}", e=params.emissions.probs)
         args = self._inference_args(params, emissions, inputs)
         posterior = hmm_two_filter_smoother(*args)
 
-        jax.debug.print("Posterior {bar}", bar=posterior)
+        # jax.debug.print("Posterior {bar}", bar=posterior)
 
         initial_stats = self.initial_component.collect_suff_stats(params.initial, posterior, inputs)
         transition_stats = self.transition_component.collect_suff_stats(params.transitions, posterior, inputs)
@@ -533,7 +542,7 @@ class PhlagHMM(HMM):
         batch_initial_stats, batch_transition_stats, batch_emission_stats = batch_stats
         initial_m_step_state, transitions_m_step_state, emissions_m_step_state = m_step_state
 
-        jax.debug.print("STATS {bar}", bar=batch_stats)
+        # jax.debug.print("STATS {bar}", bar=batch_stats)
 
         initial_params, initial_m_step_state = self.initial_component.m_step(params.initial, props.initial, batch_initial_stats, initial_m_step_state)
         transition_params, transitions_m_step_state = self.transition_component.m_step(params.transitions, props.transitions, batch_transition_stats, transitions_m_step_state)

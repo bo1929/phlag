@@ -103,8 +103,8 @@ class Phlag:
         self.num_reps = self.args.num_reps
         simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
         self.simulated_emission_prob = self.discr.compute_null_emission_prob(self.transform_freqs(simulated_freqs))
-        jax.debug.print("hello sim {bar}", bar=self.simulated_emission_prob)
-        jax.debug.print("hello obs {bar}", bar=self.discr.compute_null_emission_prob(self.observed_freqs))
+        jax.debug.print("Sim {bar}", bar=self.simulated_emission_prob)
+        jax.debug.print("Obs {bar}", bar=self.discr.compute_null_emission_prob(self.observed_freqs))
 
         # Initialize the HMM, adjusting given hyperparameters based on the sequence length (the number of gene trees)
         self.alpha_0 = self.gc * (1 - self.args.expected_anamoly_proportion) - self.args.expected_num_anamolies
@@ -124,6 +124,8 @@ class Phlag:
         self.prior_concentration = self.gamma * jnp.ones(self.num_classes)
         prior = tfd.Dirichlet(self.prior_concentration)
         alt_emission_probs = prior.sample(seed=jr.PRNGKey(0), sample_shape=(self.num_clades))
+        alt_emission_probs = self.simulated_emission_prob
+        # alt_emission_probs = self.discr.compute_null_emission_prob(self.observed_freqs[self.args.anomaly_ranges[0][0] : self.args.anomaly_ranges[0][1]])
         jax.debug.print("T {bar}", bar=self.psi)
         self.hmm = hmm.PhlagHMM(
             NUM_STATES,
@@ -139,7 +141,7 @@ class Phlag:
         self.params, self.props = self.hmm.initialize(initial_probs=INITIAL_PROBS, emission_probs=x)
         self.props.emissions.probs.trainable = True
         self.props.transitions.transition_matrix.trainable = True
-        self.props.initial.probs.trainable = False
+        self.props.initial.probs.trainable = True
         self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
 
         self.num_iters = self.args.num_iters
@@ -304,6 +306,9 @@ class Phlag:
     @timeit
     def run(self):
         for i in tqdm(range(self.num_iters)):
+            print(self.args.anomaly_ranges)
+            x = self.discr.compute_null_emission_prob(self.observed_freqs[self.args.anomaly_ranges[0][0] : self.args.anomaly_ranges[0][1]])
+            jax.debug.print("Obs {bar}", bar=x)
             num_iters = 100  # (i + 1) * 10
             self.params, log_probs = self.hmm.fit_em(self.params, self.props, self.observed_emissions, num_iters=num_iters, verbose=False)
             self.propose_simulated_emissions()
@@ -325,8 +330,8 @@ def parse_arguments():
 
     hmm_group = parser.add_argument_group("HMM parameters")
     hmm_group.add_argument("--expected-anamoly-proportion", type=float, default=0.1, help="Hyperparameter to control transition matrix and portion of the anomalies (default 0.1)")
-    hmm_group.add_argument("--expected-num-anamolies", type=float, default=2, help="Hyperparameter to control transition matrix and contiguity of the anomalies (default 10)")
-    hmm_group.add_argument("--emission-simlarity-penalty", type=float, default=0.001, help="Hyperparameter to control deviation of anomalies from MSC (default: 0.05)")
+    hmm_group.add_argument("--expected-num-anamolies", type=float, default=5, help="Hyperparameter to control transition matrix and contiguity of the anomalies (default 10)")
+    hmm_group.add_argument("--emission-simlarity-penalty", type=float, default=0.1, help="Hyperparameter to control deviation of anomalies from MSC (default: 0.05)")
     hmm_group.add_argument("--initial-probs-concentration", type=float, default=1.1, help="Initial probabilities concentration (default: 1.1)")
     hmm_group.add_argument("--emission-prior-concentration", type=float, default=1.1, help="Emission prior concentration (default: 1.1)")
 
@@ -338,6 +343,9 @@ def parse_arguments():
     io_group = parser.add_argument_group("I/O options")
     io_group.add_argument("--write-qqs-freqs", type=pathlib.Path, help="Write quartet frequencies to the given filepath")
     io_group.add_argument("--read-qqs-freqs", type=pathlib.Path, help="Read quartet frequencies from the given filepath")
+
+    debug_group = parser.add_argument_group("Debugging options")
+    debug_group.add_argument("--anomaly-ranges", nargs="*", type=utils.integer_pair, help="Specific clade labels to analyze (auto-selected if not provided)")
 
     return parser.parse_args()
 

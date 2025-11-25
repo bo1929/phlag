@@ -1,8 +1,21 @@
+import argparse
 import time
 from collections import defaultdict
 from functools import wraps
 
 from fastroot.MinVar import MV00_Tree
+
+
+def integer_pair(arg_string):
+    try:
+        parts = arg_string.split(",")
+        if len(parts) != 2:
+            raise ValueError("Argument must contain exactly two integers separated by a comma.")
+        int1 = int(parts[0].strip())
+        int2 = int(parts[1].strip())
+        return [int1, int2]
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"Invalid integer pair format: {arg_string}. {e}")
 
 
 def is_float(val):
