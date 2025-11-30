@@ -18,6 +18,8 @@ from qqs import QQS, MSC
 
 
 EPS = 1e-5
+BRANCH_LENGTH_LAMBDA = 0.5
+MIN_BRANCH_LENGTH = 1e-6
 
 
 class ADHMM:
@@ -38,11 +40,6 @@ class ADHMM:
         self.output_str += "\n# " + self.species_tree.newick()
         self.perm_to_int = {(0, 1, 2): 0, (0, 2, 1): 1, (1, 0, 2): 2, (1, 2, 0): 3, (2, 0, 1): 4, (2, 1, 0): 5}
 
-        blen_l = []
-        for nd in self.species_tree.traverse_postorder(internal=True, leaves=False):
-            blen_l.append(nd.get_edge_length())
-        self.median_blen = jnp.median(blen_l)
-
     def select_clades(self, num_clades):
         partitions = [copy.deepcopy(self.species_tree)]
         selected_clades = []
@@ -61,7 +58,7 @@ class ADHMM:
         selected_clades = [label for label in selected_clades if label is not None]
         return selected_clades
 
-    # Entropy based branch selection with three topology labels
+
     def select_best_clade(self, tree):
         nd_l, pscore_l = [], []
         for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
@@ -94,12 +91,49 @@ class ADHMM:
             self.selected_clades = self.select_clades(self.args.num_clades)
 
 
-# Gaussian Quartet Supports HMM
-class GQSHMM(ADHMM):
+class QQSHMM(ADHMM):
     def __init__(self, args):
         super().__init__(args)
         self.msc = MSC(self.species_tree, self.gene_trees)
         self.label_to_freqs = self.msc.compute_qqs_freqs()
+        self.compute_branch_lengths()
+
+        self.label_to_support = {}
+        supports_arr = jnp.empty(len(self.label_to_freqs))
+        for i, (lbl, freqs) in enumerate(self.label_to_freqs.items()):
+            self.label_to_support[lbl] = jnp.mean(freqs[:, 0])
+            supports_arr = supports_arr.at[i].set(self.label_to_support[lbl])
+        self.median_support = jnp.nanmedian(supports_arr)
+        self.fquartile_support = jnp.nanquantile(supports_arr, 0.25)
+        self.lquartile_support = jnp.nanquantile(supports_arr, 0.75)
+
+
+    def compute_branch_lengths(self):
+        for nd in self.species_tree.traverse_postorder():
+            if nd.is_leaf():
+                nd.set_edge_length(0)
+                continue
+            freqs = self.label_to_freqs.get(nd.label, None)
+            if freqs is None:
+                nd.set_edge_length(MIN_BRANCH_LENGTH)
+                continue
+            mfreqs = freqs[self.mask, 0]
+            mmask = ~jnp.isnan(mfreqs)
+            z1 = jnp.sum(mfreqs[mmask])
+            n = jnp.sum(self.gc) + BRANCH_LENGTH_LAMBDA * 2
+            if z1 >= (n / 3):
+                bl = -jnp.log(3 * (1 - z1 / n) / 2)
+            else:
+                bl = MIN_BRANCH_LENGTH
+            final_bl = max(bl, MIN_BRANCH_LENGTH)
+            nd.set_edge_length(final_bl)
+
+
+
+# Gaussian Quartet Supports HMM
+class GQSHMM(QQSHMM):
+    def __init__(self, args):
+        super().__init__(args)
         self.set_selected_clades()
 
         observed_freqs = []
@@ -121,24 +155,17 @@ class GQSHMM(ADHMM):
         self.detect_anomalies()
 
     def get_branch_pscore(self, nd):
-        return -(nd.get_edge_length() - self.median_blen)
+        obs = self.label_to_freqs[nd.get_label()]
+        return -(jnp.mean(obs[:, 0]) - self.lquartile_support)
 
 
 # Barycentric Coordinate Bins HMM
-class BCBHMM(ADHMM):
+class BCBHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
         self.n_bins = args.n_bins
         self.split_order = args.split_order
-        self.msc = MSC(self.species_tree, self.gene_trees)
-        self.label_to_freqs = self.msc.compute_qqs_freqs()
         self.set_selected_clades()
-
-        support_l = []
-        for lbl, freqs in self.label_to_freqs.items():
-            support_l.append(freqs[:, 0])
-        self.median_support = jnp.median(support_l)
-        self.fquartile_support = jnp.quantile(support_l, 0.25)
 
         observed_freqs = []
         obs = []
@@ -164,7 +191,7 @@ class BCBHMM(ADHMM):
         cell_idx = base_idx + 2 * j
         frac_x, frac_y = obs[:, 0] * self.n_bins - i, obs[:, 1] * self.n_bins - j
         triangle_idx = cell_idx + (frac_x + frac_y > 1)
-        sorted_indices = np.argsort(obs, axis=-1)
+        sorted_indices = jnp.argsort(obs, axis=-1)
         if self.split_order:
             triangle_idx = triangle_idx * 2 + (sorted_indices[:, 0] > sorted_indices[:, 1])
         return triangle_idx
@@ -178,11 +205,9 @@ class BCBHMM(ADHMM):
 
 
 # Dominant Topology Ordering HMM
-class DTOHMM(ADHMM):
+class DTOHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
-        self.msc = MSC(self.species_tree, self.gene_trees)
-        self.label_to_freqs = self.msc.compute_qqs_freqs()
         self.set_selected_clades()
 
         observed_freqs = []
@@ -208,15 +233,13 @@ class DTOHMM(ADHMM):
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * ((nd.get_edge_length() >= self.median_blen) + EPS)
+        return entropy(c / c.sum(), base=2) * ((jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS)
 
 
 # Most Likely Topology HMM
-class MLTHMM(ADHMM):
+class MLTHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
-        self.msc = MSC(self.species_tree, self.gene_trees)
-        self.label_to_freqs = self.msc.compute_qqs_freqs()
         self.set_selected_clades()
 
         obs = []
@@ -235,14 +258,14 @@ class MLTHMM(ADHMM):
         self.detect_anomalies()
 
     def get_categories(self, obs):
-        return jnp.argmax(self.observed_freqs, axis=-1)
+        return jnp.argmax(obs, axis=-1)
 
     def get_branch_pscore(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * ((nd.get_edge_length() >= self.median_blen) + EPS)
+        return entropy(c / c.sum(), base=2) * ((jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS)
 
 
 # Consistent Bipartition HMM

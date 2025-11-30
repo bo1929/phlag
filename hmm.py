@@ -14,8 +14,17 @@ from typing import Any, NamedTuple, Optional, Tuple, Union, cast
 from dynamax.utils.utils import pytree_sum
 from dynamax.hidden_markov_model.inference import HMMPosterior
 from dynamax.hidden_markov_model.inference import hmm_two_filter_smoother
-from dynamax.hidden_markov_model.models.abstractions import HMM, HMMEmissions, HMMTransitions, HMMParameterSet, HMMPropertySet
-from dynamax.hidden_markov_model.models.initial import StandardHMMInitialState, ParamsStandardHMMInitialState
+from dynamax.hidden_markov_model.models.abstractions import (
+    HMM,
+    HMMEmissions,
+    HMMTransitions,
+    HMMParameterSet,
+    HMMPropertySet,
+)
+from dynamax.hidden_markov_model.models.initial import (
+    StandardHMMInitialState,
+    ParamsStandardHMMInitialState,
+)
 from dynamax.hidden_markov_model.models.transitions import ParamsStandardHMMTransitions
 from dynamax.parameters import ParameterProperties, ParameterSet, PropertySet
 
@@ -115,7 +124,11 @@ class PhlagHMMTransitions(HMMTransitions):
     * $\psi \in \mathbb{R}_+$ or $\psi \in \mathcal{M}_{K, K}(\mathbb{R}_+)$ is the concentration.
     """
 
-    def __init__(self, num_states: Int, concentration: Union[Scalar, Float[Array, "num_states num_states"]] = 1.1):
+    def __init__(
+        self,
+        num_states: Int,
+        concentration: Union[Scalar, Float[Array, "num_states num_states"]] = 1.1,
+    ):
         """
         Args:
             transition_matrix[j,k]: prob(hidden(t) = k | hidden(t-1)j)
@@ -123,17 +136,24 @@ class PhlagHMMTransitions(HMMTransitions):
         self.num_states = num_states
         self.concentration = concentration * jnp.ones((num_states, num_states))
 
-    def distribution(self, params: ParamsStandardHMMTransitions, state: IntScalar, inputs=None):
+    def distribution(
+        self, params: ParamsStandardHMMTransitions, state: IntScalar, inputs=None
+    ):
         """Return the distribution over the next state given the current state."""
         return tfd.Categorical(probs=params.transition_matrix[state])
 
     def initialize(
-        self, key: Optional[Array] = None, method="prior", transition_matrix: Optional[Float[Array, "num_states num_states"]] = None
+        self,
+        key: Optional[Array] = None,
+        method="prior",
+        transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
     ) -> Tuple[ParamsStandardHMMTransitions, ParamsStandardHMMTransitions]:
         """Initialize the model parameters and their corresponding properties."""
         if transition_matrix is None:
             if key is None:
-                raise ValueError("A key must be provided if transition_matrix is not provided.")
+                raise ValueError(
+                    "A key must be provided if transition_matrix is not provided."
+                )
             else:
                 # if method == "prior":
                 tm_sample = tfd.Dirichlet(self.concentration).sample(seed=key)
@@ -142,20 +162,33 @@ class PhlagHMMTransitions(HMMTransitions):
                 #     tm_sample = tfd.Dirichlet(random_concentration).sample(seed=key)
                 # else:
                 #     raise ValueError("method must be either 'prior' or 'random'.")
-                transition_matrix = cast(Float[Array, "num_states num_states"], tm_sample)
+                transition_matrix = cast(
+                    Float[Array, "num_states num_states"], tm_sample
+                )
         params = ParamsStandardHMMTransitions(transition_matrix=transition_matrix)
-        props = ParamsStandardHMMTransitions(transition_matrix=ParameterProperties(constrainer=tfb.SoftmaxCentered()))
+        props = ParamsStandardHMMTransitions(
+            transition_matrix=ParameterProperties(constrainer=tfb.SoftmaxCentered())
+        )
         return params, props
 
     def log_prior(self, params: ParamsStandardHMMTransitions) -> Scalar:
         """Compute the log prior probability of the parameters."""
-        return tfd.Dirichlet(self.concentration).log_prob(params.transition_matrix).sum()
+        return (
+            tfd.Dirichlet(self.concentration).log_prob(params.transition_matrix).sum()
+        )
 
-    def _compute_transition_matrices(self, params: ParamsStandardHMMTransitions, inputs=None) -> Float[Array, "num_states num_states"]:
+    def _compute_transition_matrices(
+        self, params: ParamsStandardHMMTransitions, inputs=None
+    ) -> Float[Array, "num_states num_states"]:
         """Compute the transition matrices."""
         return params.transition_matrix
 
-    def collect_suff_stats(self, params, posterior: HMMPosterior, inputs=None) -> Union[Float[Array, "num_states num_states"], Float[Array, "num_timesteps_minus_1 num_states num_states"]]:
+    def collect_suff_stats(
+        self, params, posterior: HMMPosterior, inputs=None
+    ) -> Union[
+        Float[Array, "num_states num_states"],
+        Float[Array, "num_timesteps_minus_1 num_states num_states"],
+    ]:
         """Collect the sufficient statistics for the model."""
         return posterior.trans_probs
 
@@ -164,7 +197,11 @@ class PhlagHMMTransitions(HMMTransitions):
         return None
 
     def m_step(
-        self, params: ParamsStandardHMMTransitions, props: ParamsStandardHMMTransitions, batch_stats: Float[Array, "batch num_states num_states"], m_step_state: Any
+        self,
+        params: ParamsStandardHMMTransitions,
+        props: ParamsStandardHMMTransitions,
+        batch_stats: Float[Array, "batch num_states num_states"],
+        m_step_state: Any,
     ) -> Tuple[ParamsStandardHMMTransitions, Any]:
         """Perform the M-step of the EM algorithm."""
         if props.transition_matrix.trainable:
@@ -172,7 +209,9 @@ class PhlagHMMTransitions(HMMTransitions):
                 transition_matrix = jnp.array([[1.0]])
             else:
                 expected_trans_counts = batch_stats.sum(axis=0)
-                transition_matrix = tfd.Dirichlet(self.concentration + expected_trans_counts).mode()
+                transition_matrix = tfd.Dirichlet(
+                    self.concentration + expected_trans_counts
+                ).mode()
             jax.debug.print("TT {bar}", bar=transition_matrix)
             jax.debug.print("ET {bar}", bar=expected_trans_counts)
             params = params._replace(transition_matrix=transition_matrix)
@@ -196,15 +235,21 @@ class PhlagHMMEmissions(HMMEmissions):
         emission_dim: Int,
         num_classes: Int,
         emission_similarity_penalty: Float,
-        emission_transfer_cost: Union[Scalar, Float[Array, "emission_dim num_classes num_classes"]] = 1,
+        emission_transfer_cost: Union[
+            Scalar, Float[Array, "emission_dim num_classes num_classes"]
+        ] = 1,
         emission_prior_concentration: Union[Scalar, Float[Array, "num_classes"]] = 1.1,
     ):
         self.num_states = num_states
         self.emission_dim = emission_dim
         self.num_classes = num_classes
         self.similarity_penalty = emission_similarity_penalty
-        self.transfer_cost = emission_transfer_cost * jnp.ones((self.emission_dim, self.num_classes, self.num_classes))
-        self.prior_concentration = emission_prior_concentration * jnp.ones(self.num_classes)
+        self.transfer_cost = emission_transfer_cost * jnp.ones(
+            (self.emission_dim, self.num_classes, self.num_classes)
+        )
+        self.prior_concentration = emission_prior_concentration * jnp.ones(
+            self.num_classes
+        )
 
     def set_emission_prior_concentration(self, emission_prior_concentration):
         self.prior_concentration = emission_prior_concentration
@@ -214,16 +259,25 @@ class PhlagHMMEmissions(HMMEmissions):
         """Shape of the emission distribution."""
         return (self.emission_dim,)
 
-    def distribution(self, params: ParamsCategoricalHMMEmissions, state: IntScalar, inputs=None) -> tfd.Distribution:
+    def distribution(
+        self, params: ParamsCategoricalHMMEmissions, state: IntScalar, inputs=None
+    ) -> tfd.Distribution:
         """Return the emission distribution for a given state."""
-        return tfd.Independent(tfd.Categorical(probs=params.probs[state]), reinterpreted_batch_ndims=1)
+        return tfd.Independent(
+            tfd.Categorical(probs=params.probs[state]), reinterpreted_batch_ndims=1
+        )
 
     def log_prior(self, params: ParamsCategoricalHMMEmissions) -> Scalar:
         """Return the log prior probability of the emission parameters."""
         return tfd.Dirichlet(self.prior_concentration).log_prob(params.probs).sum()
 
     def initialize(
-        self, key: Optional[Array] = jr.PRNGKey(0), method="prior", emission_probs: Optional[Float[Array, "num_states emission_dim num_classes"]] = None
+        self,
+        key: Optional[Array] = jr.PRNGKey(0),
+        method="prior",
+        emission_probs: Optional[
+            Float[Array, "num_states emission_dim num_classes"]
+        ] = None,
     ) -> Tuple[ParamsCategoricalHMMEmissions, ParamsCategoricalHMMEmissions]:
         """Initialize the model parameters and their corresponding properties.
 
@@ -248,20 +302,30 @@ class PhlagHMMEmissions(HMMEmissions):
                 if key is None:
                     raise ValueError("key must not be None when emission_probs is None")
                 prior = tfd.Dirichlet(self.prior_concentration)
-                emission_probs = prior.sample(seed=key, sample_shape=(self.num_states, self.emission_dim))
+                emission_probs = prior.sample(
+                    seed=key, sample_shape=(self.num_states, self.emission_dim)
+                )
             elif method.lower() == "kmeans":
-                raise NotImplementedError("kmeans initialization is not yet implemented!")
+                raise NotImplementedError(
+                    "kmeans initialization is not yet implemented!"
+                )
             else:
                 raise Exception("invalid initialization method: {}".format(method))
         else:
-            assert emission_probs.shape == (self.num_states, self.emission_dim, self.num_classes)
+            assert emission_probs.shape == (
+                self.num_states,
+                self.emission_dim,
+                self.num_classes,
+            )
             assert jnp.all(emission_probs >= 0)
             print(emission_probs.sum(axis=2))
             # assert jnp.allclose(emission_probs.sum(axis=2), 1.0)
 
         # Add parameters to the dictionary
         params = ParamsCategoricalHMMEmissions(probs=emission_probs)
-        props = ParamsCategoricalHMMEmissions(probs=ParameterProperties(constrainer=tfb.SoftmaxCentered()))
+        props = ParamsCategoricalHMMEmissions(
+            probs=ParameterProperties(constrainer=tfb.SoftmaxCentered())
+        )
         return params, props
 
     def collect_suff_stats(self, params, posterior, emissions, inputs=None):
@@ -304,7 +368,9 @@ class PhlagHMMEmissions(HMMEmissions):
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
-        result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        result = minimize(
+            fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4
+        )
         # Notice that this is not bounded (hence softmax is needed)
         jax.debug.print("E0 {bar}", bar=softmax(result.x))
         jax.debug.print("HDISTANCE {bar}", bar=fdist(softmax(result.x), emission_0))
@@ -330,13 +396,17 @@ class PhlagHMMEmissions(HMMEmissions):
             # Negative log-likelihood (from multinomial distribution).
             neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
             # Negative log-prior without the normalization factor
-            neg_log_prior = self.similarity_penalty * (1 - fdist(emission_1, emission_0))
+            neg_log_prior = self.similarity_penalty * (
+                1 - fdist(emission_1, emission_0)
+            )
             jax.debug.print("prior1 {bar}", bar=neg_log_prior)
             jax.debug.print("likelihood1 {bar}", bar=neg_log_likelihood)
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
-        result = minimize(fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4)
+        result = minimize(
+            fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4
+        )
         # Notice that this is not bounded (hence softmax is needed)
 
         jax.debug.print("E1 {bar}", bar=softmax(result.x))
@@ -384,7 +454,13 @@ class PhlagHMMEmissions(HMMEmissions):
         return q
 
     @timeit
-    def m_step(self, params, props, batch_stats, m_step_state: Union[Scalar, Float[Array, "emission_dim num_classes"]]):
+    def m_step(
+        self,
+        params,
+        props,
+        batch_stats,
+        m_step_state: Union[Scalar, Float[Array, "emission_dim num_classes"]],
+    ):
         """Perform the m-step for the emission distribution."""
         if props.probs.trainable:
             emission_stats = pytree_sum(batch_stats, axis=0)
@@ -392,15 +468,29 @@ class PhlagHMMEmissions(HMMEmissions):
             # probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
             jax.debug.print("bfore {bar}", bar=probs)
             jax.debug.print("em {bar}", bar=emission_stats["sum_x"])
-            probs = probs.at[1].set(jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[1], self.transfer_cost))
-            probs = probs.at[0].set(jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(m_step_state, (self.prior_concentration + emission_stats["sum_x"])[0], self.transfer_cost))
+            probs = probs.at[1].set(
+                jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
+                    m_step_state,
+                    (self.prior_concentration + emission_stats["sum_x"])[1],
+                    self.transfer_cost,
+                )
+            )
+            probs = probs.at[0].set(
+                jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(
+                    m_step_state,
+                    (self.prior_concentration + emission_stats["sum_x"])[0],
+                    self.transfer_cost,
+                )
+            )
             params = params._replace(probs=probs)
             jax.debug.print("after {bar}", bar=probs)
         return params, m_step_state
 
     def probs_dissimilarity(self, params):
         probs = params.probs
-        return jax.vmap(wasserstein_distance, in_axes=(0, 0, 0), out_axes=0)(probs[0], probs[1], self.transfer_cost)
+        return jax.vmap(wasserstein_distance, in_axes=(0, 0, 0), out_axes=0)(
+            probs[0], probs[1], self.transfer_cost
+        )
 
 
 class ParamsPhlagHMM(NamedTuple):
@@ -430,9 +520,13 @@ class PhlagHMM(HMM):
         num_classes: Int = 2,
         emission_similarity_penalty: Scalar = 0.001,
         emission_prior_concentration: Union[Scalar, Float[Array, "num_classes"]] = 1.1,
-        emission_transfer_cost: Union[Float[Array, "emission_dim num_classes num_classes"]] = 1,
+        emission_transfer_cost: Union[
+            Float[Array, "emission_dim num_classes num_classes"]
+        ] = 1,
         initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
-        transition_matrix_concentration: Union[Scalar, Float[Array, "num_states num_states"]] = 1.1,
+        transition_matrix_concentration: Union[
+            Scalar, Float[Array, "num_states num_states"]
+        ] = 1.1,
     ):
         self.num_states = num_states
         self.emission_dim = emission_dim
@@ -446,8 +540,14 @@ class PhlagHMM(HMM):
         self.transitions_m_step_state = None
         self.emissions_m_step_state = None
 
-        self.initial_component = StandardHMMInitialState(num_states=self.num_states, initial_probs_concentration=self.initial_probs_concentration)
-        self.transition_component = PhlagHMMTransitions(num_states=self.num_states, concentration=self.transition_matrix_concentration)
+        self.initial_component = StandardHMMInitialState(
+            num_states=self.num_states,
+            initial_probs_concentration=self.initial_probs_concentration,
+        )
+        self.transition_component = PhlagHMMTransitions(
+            num_states=self.num_states,
+            concentration=self.transition_matrix_concentration,
+        )
         self.emission_component = PhlagHMMEmissions(
             self.num_states,
             self.emission_dim,
@@ -456,13 +556,20 @@ class PhlagHMM(HMM):
             emission_prior_concentration=self.emission_prior_concentration,
             emission_transfer_cost=self.emission_transfer_cost,
         )
-        super().__init__(num_states=self.num_states, initial_component=self.initial_component, transition_component=self.transition_component, emission_component=self.emission_component)
+        super().__init__(
+            num_states=self.num_states,
+            initial_component=self.initial_component,
+            transition_component=self.transition_component,
+            emission_component=self.emission_component,
+        )
 
     def initialize(
         self,
         key: Array = jr.PRNGKey(0),
         method: str = "prior",
-        emission_probs: Optional[Float[Array, "num_states emission_dim num_classes"]] = None,
+        emission_probs: Optional[
+            Float[Array, "num_states emission_dim num_classes"]
+        ] = None,
         initial_probs: Optional[Float[Array, "num_states"]] = None,
         transition_matrix: Optional[Float[Array, "num_states num_states"]] = None,
     ) -> Tuple[ParameterSet, PropertySet]:
@@ -484,13 +591,29 @@ class PhlagHMM(HMM):
         """
         key1, key2, key3 = jr.split(key, 3)
         params, props = dict(), dict()
-        params["initial"], props["initial"] = self.initial_component.initialize(key1, method=method, initial_probs=initial_probs)
-        params["transitions"], props["transitions"] = self.transition_component.initialize(key2, method=method, transition_matrix=transition_matrix)
-        params["emissions"], props["emissions"] = self.emission_component.initialize(key3, method=method, emission_probs=emission_probs)
+        params["initial"], props["initial"] = self.initial_component.initialize(
+            key1, method=method, initial_probs=initial_probs
+        )
+        (
+            params["transitions"],
+            props["transitions"],
+        ) = self.transition_component.initialize(
+            key2, method=method, transition_matrix=transition_matrix
+        )
+        params["emissions"], props["emissions"] = self.emission_component.initialize(
+            key3, method=method, emission_probs=emission_probs
+        )
         return ParamsPhlagHMM(**params), ParamsPhlagHMM(**props)
 
     # @timeit
-    def initialize_m_step_state(self, params: HMMParameterSet, props: HMMPropertySet, initial_m_step_state=None, transitions_m_step_state=None, emissions_m_step_state=None):
+    def initialize_m_step_state(
+        self,
+        params: HMMParameterSet,
+        props: HMMPropertySet,
+        initial_m_step_state=None,
+        transitions_m_step_state=None,
+        emissions_m_step_state=None,
+    ):
         """Initialize any required state for the M step.
         For example, this might include the optimizer state for Adam.
         """
@@ -501,12 +624,26 @@ class PhlagHMM(HMM):
         if emissions_m_step_state is not None:
             self.emissions_m_step_state = emissions_m_step_state
         if self.initial_m_step_state is None:
-            self.initial_m_step_state = self.initial_component.initialize_m_step_state(params.initial, props.initial)
+            self.initial_m_step_state = self.initial_component.initialize_m_step_state(
+                params.initial, props.initial
+            )
         if self.transitions_m_step_state is None:
-            self.transitions_m_step_state = self.transition_component.initialize_m_step_state(params.transitions, props.transitions)
+            self.transitions_m_step_state = (
+                self.transition_component.initialize_m_step_state(
+                    params.transitions, props.transitions
+                )
+            )
         if self.emissions_m_step_state is None:
-            self.emissions_m_step_state = self.emission_component.initialize_m_step_state(params.emissions, props.emissions)
-        return self.initial_m_step_state, self.transitions_m_step_state, self.emissions_m_step_state
+            self.emissions_m_step_state = (
+                self.emission_component.initialize_m_step_state(
+                    params.emissions, props.emissions
+                )
+            )
+        return (
+            self.initial_m_step_state,
+            self.transitions_m_step_state,
+            self.emissions_m_step_state,
+        )
 
     # def get_posterior(self, params: HMMParameterSet = None, emissions: Array = None):
     #     if self.posterior is None:
@@ -517,7 +654,12 @@ class PhlagHMM(HMM):
     #     return self.posterior
 
     # @timeit
-    def e_step(self, params: HMMParameterSet, emissions: Array, inputs: Optional[Float[Array, "num_timesteps input_dim"]] = None) -> Tuple[PyTree, Scalar]:
+    def e_step(
+        self,
+        params: HMMParameterSet,
+        emissions: Array,
+        inputs: Optional[Float[Array, "num_timesteps input_dim"]] = None,
+    ) -> Tuple[PyTree, Scalar]:
         """The E-step computes expected sufficient statistics under the
         posterior. In the generic case, we simply return the posterior itself.
         """
@@ -527,26 +669,66 @@ class PhlagHMM(HMM):
 
         # jax.debug.print("Posterior {bar}", bar=posterior)
 
-        initial_stats = self.initial_component.collect_suff_stats(params.initial, posterior, inputs)
-        transition_stats = self.transition_component.collect_suff_stats(params.transitions, posterior, inputs)
-        emission_stats = self.emission_component.collect_suff_stats(params.emissions, posterior, emissions, inputs)
-        return (initial_stats, transition_stats, emission_stats), posterior.marginal_loglik
+        initial_stats = self.initial_component.collect_suff_stats(
+            params.initial, posterior, inputs
+        )
+        transition_stats = self.transition_component.collect_suff_stats(
+            params.transitions, posterior, inputs
+        )
+        emission_stats = self.emission_component.collect_suff_stats(
+            params.emissions, posterior, emissions, inputs
+        )
+        return (
+            initial_stats,
+            transition_stats,
+            emission_stats,
+        ), posterior.marginal_loglik
 
     def emission_dissimilarity(self, params):
         return self.emission_component.probs_dissimilarity(params.emissions)
 
-    def m_step(self, params: HMMParameterSet, props: HMMPropertySet, batch_stats: PyTree, m_step_state: Any) -> Tuple[HMMParameterSet, Any]:
+    def m_step(
+        self,
+        params: HMMParameterSet,
+        props: HMMPropertySet,
+        batch_stats: PyTree,
+        m_step_state: Any,
+    ) -> Tuple[HMMParameterSet, Any]:
         """
         Perform an M-step on the model parameters.
         """
         batch_initial_stats, batch_transition_stats, batch_emission_stats = batch_stats
-        initial_m_step_state, transitions_m_step_state, emissions_m_step_state = m_step_state
+        (
+            initial_m_step_state,
+            transitions_m_step_state,
+            emissions_m_step_state,
+        ) = m_step_state
 
         # jax.debug.print("STATS {bar}", bar=batch_stats)
 
-        initial_params, initial_m_step_state = self.initial_component.m_step(params.initial, props.initial, batch_initial_stats, initial_m_step_state)
-        transition_params, transitions_m_step_state = self.transition_component.m_step(params.transitions, props.transitions, batch_transition_stats, transitions_m_step_state)
-        emission_params, emissions_m_step_state = self.emission_component.m_step(params.emissions, props.emissions, batch_emission_stats, emissions_m_step_state)
-        params = params._replace(initial=initial_params, transitions=transition_params, emissions=emission_params)
-        m_step_state = initial_m_step_state, transitions_m_step_state, emissions_m_step_state
+        initial_params, initial_m_step_state = self.initial_component.m_step(
+            params.initial, props.initial, batch_initial_stats, initial_m_step_state
+        )
+        transition_params, transitions_m_step_state = self.transition_component.m_step(
+            params.transitions,
+            props.transitions,
+            batch_transition_stats,
+            transitions_m_step_state,
+        )
+        emission_params, emissions_m_step_state = self.emission_component.m_step(
+            params.emissions,
+            props.emissions,
+            batch_emission_stats,
+            emissions_m_step_state,
+        )
+        params = params._replace(
+            initial=initial_params,
+            transitions=transition_params,
+            emissions=emission_params,
+        )
+        m_step_state = (
+            initial_m_step_state,
+            transitions_m_step_state,
+            emissions_m_step_state,
+        )
         return params, m_step_state

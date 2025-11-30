@@ -35,7 +35,11 @@ class BinDiscretization(Discretization):
         obsd = jnp.zeros((obs.shape[0], self.emission_dim))
         for i in range(self.emission_dim):
             for j in range(self.input_dim):
-                obsd = obsd.at[:, i].set(obsd[:, i] + (jnp.digitize(obs[:, i, j], self.bins[i, j]) - 1).astype(int) * ((self.num_bins) ** (self.input_dim - j - 1)))
+                obsd = obsd.at[:, i].set(
+                    obsd[:, i]
+                    + (jnp.digitize(obs[:, i, j], self.bins[i, j]) - 1).astype(int)
+                    * ((self.num_bins) ** (self.input_dim - j - 1))
+                )
         return obsd.astype(int)
 
 
@@ -46,7 +50,11 @@ class EqualBinDiscretization(BinDiscretization):
         null_emission_prob = jnp.empty((self.emission_dim, self.num_classes))
         eps = 1e-5
         for i in range(self.emission_dim):
-            hist, b = jnp.histogramdd(null_sample[:, i, :], bins=[self.num_bins for _ in range(self.input_dim)], range=[(0 - eps, 1 + eps) for _ in range(self.input_dim)])
+            hist, b = jnp.histogramdd(
+                null_sample[:, i, :],
+                bins=[self.num_bins for _ in range(self.input_dim)],
+                range=[(0 - eps, 1 + eps) for _ in range(self.input_dim)],
+            )
             hist = (hist / hist.sum()).reshape(-1)
             null_emission_prob = null_emission_prob.at[i, :].set(hist)
             self.bins = self.bins.at[i, :].set(b)
@@ -54,7 +62,9 @@ class EqualBinDiscretization(BinDiscretization):
 
 
 class FixedBinDiscretization(BinDiscretization):
-    def __init__(self, emission_dim: int, input_dim: int, bins: Float[Array, "input_dim _"]):
+    def __init__(
+        self, emission_dim: int, input_dim: int, bins: Float[Array, "input_dim _"]
+    ):
         self.emission_dim = emission_dim
         self.input_dim = input_dim
         self.num_bins = bins.shape[-1] - 1
@@ -109,9 +119,15 @@ class ClusterDiscretization(Discretization):
                 best_num_classes = j
             if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
                 break
-            print(f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr)
+            print(
+                f"For {j} classes, the avg. silhouette score: {sill_avg}",
+                file=sys.stderr,
+            )
             j += int(math.sqrt(j))
-        print(f"Best: {best_num_classes} classes, the avg. silhouette score: {best_sill_avg}", file=sys.stderr)
+        print(
+            f"Best: {best_num_classes} classes, the avg. silhouette score: {best_sill_avg}",
+            file=sys.stderr,
+        )
         self.num_classes = best_num_classes
         for i in range(len(self.f)):
             self.f[i].set_params(n_clusters=self.num_classes)
@@ -123,7 +139,17 @@ class ClusterDiscretization(Discretization):
             for j in range(self.num_classes):
                 pwd_i = []
                 for k in range(self.num_classes):
-                    pwd_i.append(math.sqrt(sum((self.f[i].cluster_centers_[j, :] - self.f[i].cluster_centers_[k, :]) ** 2)))
+                    pwd_i.append(
+                        math.sqrt(
+                            sum(
+                                (
+                                    self.f[i].cluster_centers_[j, :]
+                                    - self.f[i].cluster_centers_[k, :]
+                                )
+                                ** 2
+                            )
+                        )
+                    )
                 pwd.append(pwd_i)
             pw_dist.append(pwd)
         return pw_dist
@@ -144,20 +170,30 @@ class KMeansDiscretization(ClusterDiscretization):
         self.input_dim = input_dim
         self.num_classes = num_classes
         self.cl = []
-        self.f = [cluster.KMeans(n_clusters=self.num_classes) for _ in range(emission_dim)]
+        self.f = [
+            cluster.KMeans(n_clusters=self.num_classes) for _ in range(emission_dim)
+        ]
 
-    def fit_discretization(self, observed_freqs: Float[Array, "_ emission_dim input_dim"]):
+    def fit_discretization(
+        self, observed_freqs: Float[Array, "_ emission_dim input_dim"]
+    ):
         assert observed_freqs.shape[1] == self.emission_dim
         assert observed_freqs.shape[2] == self.input_dim
         for i in range(self.emission_dim):
             self.f[i].fit(observed_freqs[:, i, :])
-            c = jnp.unique(self.f[i].predict(observed_freqs[:, i, :]), return_counts=True)
+            c = jnp.unique(
+                self.f[i].predict(observed_freqs[:, i, :]), return_counts=True
+            )
             self.cl.append(c)
             curr_num_classes = c[0].shape[0]
-            self.num_classes = curr_num_classes if i == 0 else max(self.num_classes, curr_num_classes)
+            self.num_classes = (
+                curr_num_classes if i == 0 else max(self.num_classes, curr_num_classes)
+            )
         self.num_classes = 3
 
-    def compute_null_emission_prob(self, simulated_freqs: Float[Array, "_ emission_dim input_dim"]):
+    def compute_null_emission_prob(
+        self, simulated_freqs: Float[Array, "_ emission_dim input_dim"]
+    ):
         assert simulated_freqs.shape[1] == self.emission_dim
         assert simulated_freqs.shape[2] == self.input_dim
         null_emission_prob = jnp.zeros((self.emission_dim, self.num_classes))
@@ -168,6 +204,10 @@ class KMeansDiscretization(ClusterDiscretization):
             for k, v in c:
                 null_emission_prob = null_emission_prob.at[i, k].set(v)
             # null_emission_prob = null_emission_prob.at[i,:].set(null_emission_prob[i, :] + PCOUNT * (null_emission_prob[i, :] < 1e-4))
-            null_emission_prob = null_emission_prob.at[i, :].set(null_emission_prob[i, :] / jnp.sum(null_emission_prob[i, :]))
-            null_emission_prob = null_emission_prob.at[i, :].set(null_emission_prob[i, :] + PEPS) / jnp.sum(null_emission_prob[i, :] + PEPS)
+            null_emission_prob = null_emission_prob.at[i, :].set(
+                null_emission_prob[i, :] / jnp.sum(null_emission_prob[i, :])
+            )
+            null_emission_prob = null_emission_prob.at[i, :].set(
+                null_emission_prob[i, :] + PEPS
+            ) / jnp.sum(null_emission_prob[i, :] + PEPS)
         return null_emission_prob

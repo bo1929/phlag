@@ -10,12 +10,16 @@ def integer_pair(arg_string):
     try:
         parts = arg_string.split(",")
         if len(parts) != 2:
-            raise ValueError("Argument must contain exactly two integers separated by a comma.")
+            raise ValueError(
+                "Argument must contain exactly two integers separated by a comma."
+            )
         int1 = int(parts[0].strip())
         int2 = int(parts[1].strip())
         return [int1, int2]
     except ValueError as e:
-        raise argparse.ArgumentTypeError(f"Invalid integer pair format: {arg_string}. {e}")
+        raise argparse.ArgumentTypeError(
+            f"Invalid integer pair format: {arg_string}. {e}"
+        )
 
 
 def is_float(val):
@@ -64,7 +68,9 @@ def limited_float(min_val, max_val):
     def check_range(value):
         fvalue = float(value)
         if not (min_val <= fvalue <= max_val):
-            raise ValueError(f"Argument must be between {min_val} and {max_val} (inclusive).")
+            raise ValueError(
+                f"Argument must be between {min_val} and {max_val} (inclusive)."
+            )
         return fvalue
 
     return check_range
@@ -74,7 +80,9 @@ def limited_int(min_val, max_val):
     def check_range(value):
         fvalue = int(value)
         if not (min_val <= fvalue <= max_val):
-            raise ValueError(f"Argument must be between {min_val} and {max_val} (inclusive).")
+            raise ValueError(
+                f"Argument must be between {min_val} and {max_val} (inclusive)."
+            )
         return fvalue
 
     return check_range
