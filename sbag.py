@@ -239,7 +239,7 @@ class BCBHMM(QQSHMM):
         super().__init__(args)
         self.n_bins = args.n_bins
         self.bcb = BCB(self.n_bins)
-        self.split_order = args.split_order
+        # self.split_order = args.split_order
         self.set_selected_clades()
 
         observed_freqs = []
@@ -251,8 +251,8 @@ class BCBHMM(QQSHMM):
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
         self.obs = jnp.stack(obs, axis=1)[self.mask, :]
         self.num_classes = self.n_bins**2
-        if self.split_order:
-            self.num_classes = self.num_classes * 2
+        # if self.split_order:
+        #     self.num_classes = self.num_classes * 2
 
         self.hmm = CategoricalHMM(
             2,
@@ -523,11 +523,11 @@ def parse_arguments():
         action="store_true",
         help="Apply isometric log-ratio transformation on QQS values",
     )
-    bcbhmm_parser.add_argument(
-        "--split-order",
-        action="store_true",
-        help="Split bins into two based on the order",
-    )
+    # bcbhmm_parser.add_argument(
+    #     "--split-order",
+    #     action="store_true",
+    #     help="Split bins into two based on the order",
+    # )
     bcbhmm_parser.add_argument(
         "--n-bins", type=int, default=6, help="The number of bins at each axis"
     )
