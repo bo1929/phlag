@@ -22,13 +22,62 @@ BRANCH_LENGTH_LAMBDA = 0.5
 MIN_BRANCH_LENGTH = 1e-6
 
 
+class BCB:
+    def __init__(self, n_bins):
+        self.n_bins = n_bins
+        self.bins, self.bin_centers = self.create_bins()
+
+    def create_bins(self):
+        bins = []
+        bin_centers = []
+        for i in range(self.n_bins):
+            for j in range(self.n_bins - i):
+                x1, y1 = i / self.n_bins, j / self.n_bins
+                z1 = 1 - x1 - y1
+                x2, y2 = (i + 1) / self.n_bins, j / self.n_bins
+                z2 = 1 - x2 - y2
+                x3, y3 = i / self.n_bins, (j + 1) / self.n_bins
+                z3 = 1 - x3 - y3
+                if z1 >= 0 and z2 >= 0 and z3 >= 0:
+                    bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
+                    bin_centers.append(
+                        ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
+                    )
+
+                if j < self.n_bins - i - 1:
+                    x1, y1 = (i + 1) / self.n_bins, j / self.n_bins
+                    z1 = 1 - x1 - y1
+                    x2, y2 = i / self.n_bins, (j + 1) / self.n_bins
+                    z2 = 1 - x2 - y2
+                    x3, y3 = (i + 1) / self.n_bins, (j + 1) / self.n_bins
+                    z3 = 1 - x3 - y3
+                    if z1 >= 0 and z2 >= 0 and z3 >= 0:
+                        bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
+                        bin_centers.append(
+                            ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
+                        )
+        return bins, jnp.array(bin_centers)
+
+    def assign_points(self, points):
+        assignments = -jnp.ones(len(points), dtype=int)
+        min_dist = jnp.zeros(len(points)) + float("inf")
+        for ix, center in enumerate(self.bin_centers):
+            dist = jnp.sqrt(jnp.sum((points - self.bin_centers[ix]) ** 2, axis=-1))
+            m = dist < min_dist
+            assignments = assignments.at[m].set(ix)
+            min_dist = min_dist.at[m].set(dist[m])
+        return assignments
+
+
 class ADHMM:
     def __init__(self, args):
         self.args = args
         self.output_file = self.args.output_file
 
         # Read the species tree and the gene trees
-        self.species_tree = utils.label_tree(ts.read_tree_newick(self.args.species_tree))
+        self.species_tree = utils.label_tree(
+            ts.read_tree_newick(self.args.species_tree)
+        )
         self.label_to_node = self.species_tree.label_to_node(selection="all")
         with open(self.args.gene_trees) as f:
             self.gene_trees = [ts.read_tree_newick(line.strip()) for line in f]
@@ -38,7 +87,14 @@ class ADHMM:
         self.output_str = f"# {' '.join(sys.argv)}"
         self.clade_labels = self.args.clade_labels
         self.output_str += "\n# " + self.species_tree.newick()
-        self.perm_to_int = {(0, 1, 2): 0, (0, 2, 1): 1, (1, 0, 2): 2, (1, 2, 0): 3, (2, 0, 1): 4, (2, 1, 0): 5}
+        self.perm_to_int = {
+            (0, 1, 2): 0,
+            (0, 2, 1): 1,
+            (1, 0, 2): 2,
+            (1, 2, 0): 3,
+            (2, 0, 1): 4,
+            (2, 1, 0): 5,
+        }
 
     def select_clades(self, num_clades):
         partitions = [copy.deepcopy(self.species_tree)]
@@ -53,16 +109,23 @@ class ADHMM:
             for p in utils.partition_tree(lp):
                 partitions.append(p)
             # partitions = [subtree for partition in partitions for subtree in utils.partition_tree(partition)]
-            partitions = [tree for tree in partitions if tree.num_nodes(leaves=True, internal=False) > 2]
+            partitions = [
+                tree
+                for tree in partitions
+                if tree.num_nodes(leaves=True, internal=False) > 2
+            ]
         selected_clades = [self.select_best_clade(tree) for tree in partitions]
         selected_clades = [label for label in selected_clades if label is not None]
         return selected_clades
 
-
     def select_best_clade(self, tree):
         nd_l, pscore_l = [], []
         for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
-            if (not (self.label_to_node.get(nd.get_label(), ""))) or nd.is_root() or (nd.get_parent() is None):
+            if (
+                (not (self.label_to_node.get(nd.get_label(), "")))
+                or nd.is_root()
+                or (nd.get_parent() is None)
+            ):
                 continue
             s = self.get_branch_pscore(nd)
             if utils.is_float(s):
@@ -79,8 +142,12 @@ class ADHMM:
         params, props = self.hmm.initialize()
         em_params, log_probs = self.hmm.fit_em(params, props, self.obs, num_iters=500)
         most_likely_states = self.hmm.most_likely_states(em_params, self.obs)
-        self.output_str += "\n" + ",".join(map(lambda x: str(x), most_likely_states.astype(int).tolist()))
-        self.output_str += "\n" + ",".join(map(lambda x: str(x), self.obs[:, :].sum(axis=1).tolist()))
+        self.output_str += "\n" + ",".join(
+            map(lambda x: str(x), most_likely_states.astype(int).tolist())
+        )
+        self.output_str += "\n" + ",".join(
+            map(lambda x: str(x), self.obs[:, :].sum(axis=1).tolist())
+        )
         with open(self.output_file, "w") as f:
             f.write(self.output_str)
 
@@ -107,7 +174,6 @@ class QQSHMM(ADHMM):
         self.fquartile_support = jnp.nanquantile(supports_arr, 0.25)
         self.lquartile_support = jnp.nanquantile(supports_arr, 0.75)
 
-
     def compute_branch_lengths(self):
         for nd in self.species_tree.traverse_postorder():
             if nd.is_leaf():
@@ -129,7 +195,6 @@ class QQSHMM(ADHMM):
             nd.set_edge_length(final_bl)
 
 
-
 # Gaussian Quartet Supports HMM
 class GQSHMM(QQSHMM):
     def __init__(self, args):
@@ -149,9 +214,18 @@ class GQSHMM(QQSHMM):
             self.obs = jnp.stack(obs, axis=1)
             self.obs = self.obs.reshape((self.obs.shape[0], -1))
         else:
-            self.obs = self.observed_freqs[:, :, :2].reshape((self.observed_freqs.shape[0], -1))
+            self.obs = self.observed_freqs[:, :, :2].reshape(
+                (self.observed_freqs.shape[0], -1)
+            )
 
-        self.hmm = GaussianHMM(2, self.obs.shape[1], initial_probs_concentration=1.1, transition_matrix_concentration=1.1, transition_matrix_stickiness=0.0, emission_prior_concentration=1.1)
+        self.hmm = GaussianHMM(
+            2,
+            self.obs.shape[1],
+            initial_probs_concentration=1.1,
+            transition_matrix_concentration=1.1,
+            transition_matrix_stickiness=0.0,
+            emission_prior_concentration=1.1,
+        )
         self.detect_anomalies()
 
     def get_branch_pscore(self, nd):
@@ -164,6 +238,7 @@ class BCBHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
         self.n_bins = args.n_bins
+        self.bcb = BCB(self.n_bins)
         self.split_order = args.split_order
         self.set_selected_clades()
 
@@ -180,28 +255,27 @@ class BCBHMM(QQSHMM):
             self.num_classes = self.num_classes * 2
 
         self.hmm = CategoricalHMM(
-            2, self.obs.shape[1], initial_probs_concentration=1.1, transition_matrix_concentration=1.1, transition_matrix_stickiness=0.0, emission_prior_concentration=1.1, num_classes=self.num_classes
+            2,
+            self.obs.shape[1],
+            initial_probs_concentration=1.1,
+            transition_matrix_concentration=1.1,
+            transition_matrix_stickiness=0.0,
+            emission_prior_concentration=1.1,
+            num_classes=self.num_classes,
         )
         self.detect_anomalies()
 
     def get_categories(self, obs):
-        i = (obs[:, 0] * self.n_bins).astype(int)
-        j = (obs[:, 1] * self.n_bins).astype(int)
-        base_idx = i * (2 * self.n_bins - i)
-        cell_idx = base_idx + 2 * j
-        frac_x, frac_y = obs[:, 0] * self.n_bins - i, obs[:, 1] * self.n_bins - j
-        triangle_idx = cell_idx + (frac_x + frac_y > 1)
-        sorted_indices = jnp.argsort(obs, axis=-1)
-        if self.split_order:
-            triangle_idx = triangle_idx * 2 + (sorted_indices[:, 0] > sorted_indices[:, 1])
-        return triangle_idx
+        return self.bcb.assign_points(obs)
 
     def get_branch_pscore(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * ((jnp.mean(obs[:, 0]) >= self.fquartile_support) + EPS)
+        return entropy(c / c.sum(), base=2) * (
+            (jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS
+        )
 
 
 # Dominant Topology Ordering HMM
@@ -221,19 +295,34 @@ class DTOHMM(QQSHMM):
         self.num_classes = len(self.perm_to_int)
 
         self.hmm = CategoricalHMM(
-            2, self.obs.shape[1], initial_probs_concentration=1.1, transition_matrix_concentration=1.1, transition_matrix_stickiness=0.0, emission_prior_concentration=1.1, num_classes=self.num_classes
+            2,
+            self.obs.shape[1],
+            initial_probs_concentration=1.1,
+            transition_matrix_concentration=1.1,
+            transition_matrix_stickiness=0.0,
+            emission_prior_concentration=1.1,
+            num_classes=self.num_classes,
         )
         self.detect_anomalies()
 
     def get_categories(self, obs):
-        return jnp.array(list(map(lambda x: self.perm_to_int[tuple(x.tolist())], jnp.argsort(obs, axis=-1))))
+        return jnp.array(
+            list(
+                map(
+                    lambda x: self.perm_to_int[tuple(x.tolist())],
+                    jnp.argsort(obs, axis=-1),
+                )
+            )
+        )
 
     def get_branch_pscore(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * ((jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS)
+        return entropy(c / c.sum(), base=2) * (
+            (jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS
+        )
 
 
 # Most Likely Topology HMM
@@ -253,7 +342,13 @@ class MLTHMM(QQSHMM):
         self.num_classes = self.observed_freqs.shape[-1]
 
         self.hmm = CategoricalHMM(
-            2, self.obs.shape[1], initial_probs_concentration=1.1, transition_matrix_concentration=1.1, transition_matrix_stickiness=0.0, emission_prior_concentration=1.1, num_classes=self.num_classes
+            2,
+            self.obs.shape[1],
+            initial_probs_concentration=1.1,
+            transition_matrix_concentration=1.1,
+            transition_matrix_stickiness=0.0,
+            emission_prior_concentration=1.1,
+            num_classes=self.num_classes,
         )
         self.detect_anomalies()
 
@@ -265,7 +360,9 @@ class MLTHMM(QQSHMM):
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * ((jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS)
+        return entropy(c / c.sum(), base=2) * (
+            (jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS
+        )
 
 
 # Consistent Bipartition HMM
@@ -300,7 +397,9 @@ class CBPHMM(ADHMM):
             if nd.label != clade_label:
                 tlbl = nd.label
         for ix in range(self.gc):
-            glbl_s = {nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()}
+            glbl_s = {
+                nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()
+            }
             if tlbl in glbl_s:
                 obs.append(1)
             else:
@@ -342,7 +441,9 @@ class PBPHMM(ADHMM):
         obs = []
         clbl_s = {nd.label for nd in self.label_to_node[clade_label].traverse_leaves()}
         for ix in range(self.gc):
-            glbl_s = {nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()}
+            glbl_s = {
+                nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()
+            }
             if clbl_s == glbl_s:
                 obs.append(1)
             else:
@@ -357,32 +458,79 @@ class PBPHMM(ADHMM):
 
 
 def add_shared_arguments(parser):
-    parser.add_argument("-s", "--species-tree", type=pathlib.Path, required=True, help="Path to species tree in Newick format")
-    parser.add_argument("-g", "--gene-trees", type=pathlib.Path, required=True, help="Path to file for ordered gene trees (one Newick tree per line)")
-    parser.add_argument("-c", "--clade-labels", nargs="*", type=str, help="Specific clade labels to analyze (auto-selected if not provided)")
-    parser.add_argument("--num-clades", type=int, default=5, help="Minimum number of clades to automatically select")
-    parser.add_argument("-o", "--output-file", type=pathlib.Path, required=True, help="Path to output file")
+    parser.add_argument(
+        "-s",
+        "--species-tree",
+        type=pathlib.Path,
+        required=True,
+        help="Path to species tree in Newick format",
+    )
+    parser.add_argument(
+        "-g",
+        "--gene-trees",
+        type=pathlib.Path,
+        required=True,
+        help="Path to file for ordered gene trees (one Newick tree per line)",
+    )
+    parser.add_argument(
+        "-c",
+        "--clade-labels",
+        nargs="*",
+        type=str,
+        help="Specific clade labels to analyze (auto-selected if not provided)",
+    )
+    parser.add_argument(
+        "--num-clades",
+        type=int,
+        default=5,
+        help="Minimum number of clades to automatically select",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-file",
+        type=pathlib.Path,
+        required=True,
+        help="Path to output file",
+    )
     return parser
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command", help="Available commands", description="Anomaly detection using basic HMMs and tree statistics.")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        help="Available commands",
+        description="Anomaly detection using basic HMMs and tree statistics.",
+    )
     pbphmm_parser = subparsers.add_parser("pbp-hmm", help="Consistent Bipartition HMM")
     cbphmm_parser = subparsers.add_parser("cbp-hmm", help="Consistent Bipartition HMM")
     mlthmm_parser = subparsers.add_parser("mlt-hmm", help="Most Likely Topology HMM")
-    dtohmm_parser = subparsers.add_parser("dto-hmm", help="Dominant Topology Ordering HMM")
+    dtohmm_parser = subparsers.add_parser(
+        "dto-hmm", help="Dominant Topology Ordering HMM"
+    )
     gqshmm_parser = subparsers.add_parser("gqs-hmm", help="Gaussian Quartet Scores HMM")
-    bcbhmm_parser = subparsers.add_parser("bcb-hmm", help="Barycentric Coordinate Bins HMM")
+    bcbhmm_parser = subparsers.add_parser(
+        "bcb-hmm", help="Barycentric Coordinate Bins HMM"
+    )
     pbphmm_parser = add_shared_arguments(pbphmm_parser)
     cbphmm_parser = add_shared_arguments(cbphmm_parser)
     mlthmm_parser = add_shared_arguments(mlthmm_parser)
     dtohmm_parser = add_shared_arguments(dtohmm_parser)
     gqshmm_parser = add_shared_arguments(gqshmm_parser)
     bcbhmm_parser = add_shared_arguments(bcbhmm_parser)
-    gqshmm_parser.add_argument("--apply-ilr", action="store_true", help="Apply isometric log-ratio transformation on QQS values")
-    bcbhmm_parser.add_argument("--split-order", action="store_true", help="Split bins into two based on the order")
-    bcbhmm_parser.add_argument("--n-bins", type=int, default=6, help="The number of bins at each axis")
+    gqshmm_parser.add_argument(
+        "--apply-ilr",
+        action="store_true",
+        help="Apply isometric log-ratio transformation on QQS values",
+    )
+    bcbhmm_parser.add_argument(
+        "--split-order",
+        action="store_true",
+        help="Split bins into two based on the order",
+    )
+    bcbhmm_parser.add_argument(
+        "--n-bins", type=int, default=6, help="The number of bins at each axis"
+    )
     return parser.parse_args()
 
 
