@@ -15,9 +15,11 @@ from skbio.stats.composition import ilr, multi_replace
 import utils
 
 from qqs import QQS, MSC
+from utils import timeit
 
 
 EPS = 1e-5
+DELTA = 1e3
 BRANCH_LENGTH_LAMBDA = 0.5
 MIN_BRANCH_LENGTH = 1e-6
 
@@ -32,44 +34,57 @@ class BCB:
         bin_centers = []
         for i in range(self.n_bins):
             for j in range(self.n_bins - i):
-                x1, y1 = i / self.n_bins, j / self.n_bins
-                z1 = 1 - x1 - y1
-                x2, y2 = (i + 1) / self.n_bins, j / self.n_bins
-                z2 = 1 - x2 - y2
-                x3, y3 = i / self.n_bins, (j + 1) / self.n_bins
-                z3 = 1 - x3 - y3
-                if z1 >= 0 and z2 >= 0 and z3 >= 0:
+                x1, y1, z1 = (
+                    i / self.n_bins,
+                    j / self.n_bins,
+                    (self.n_bins - i - j) / self.n_bins,
+                )
+                x2, y2, z2 = (
+                    (i + 1) / self.n_bins,
+                    j / self.n_bins,
+                    (self.n_bins - i - 1 - j) / self.n_bins,
+                )
+                x3, y3, z3 = (
+                    i / self.n_bins,
+                    (j + 1) / self.n_bins,
+                    (self.n_bins - i - j - 1) / self.n_bins,
+                )
+
+                bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
+                bin_centers.append(
+                    ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
+                )
+
+                if i + j < self.n_bins - 1:
+                    x1, y1, z1 = (
+                        (i + 1) / self.n_bins,
+                        j / self.n_bins,
+                        (self.n_bins - i - 1 - j) / self.n_bins,
+                    )
+                    x2, y2, z2 = (
+                        i / self.n_bins,
+                        (j + 1) / self.n_bins,
+                        (self.n_bins - i - j - 1) / self.n_bins,
+                    )
+                    x3, y3, z3 = (
+                        (i + 1) / self.n_bins,
+                        (j + 1) / self.n_bins,
+                        (self.n_bins - i - j - 2) / self.n_bins,
+                    )
+
                     bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
                     bin_centers.append(
                         ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
                     )
-
-                if j < self.n_bins - i - 1:
-                    x1, y1 = (i + 1) / self.n_bins, j / self.n_bins
-                    z1 = 1 - x1 - y1
-                    x2, y2 = i / self.n_bins, (j + 1) / self.n_bins
-                    z2 = 1 - x2 - y2
-                    x3, y3 = (i + 1) / self.n_bins, (j + 1) / self.n_bins
-                    z3 = 1 - x3 - y3
-                    if z1 >= 0 and z2 >= 0 and z3 >= 0:
-                        bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
-                        bin_centers.append(
-                            ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
-                        )
         return bins, jnp.array(bin_centers)
 
     def assign_points(self, points):
-        assignments = -jnp.ones(len(points), dtype=int)
-        min_dist = jnp.zeros(len(points)) + float("inf")
-        for ix, center in enumerate(self.bin_centers):
-            dist = jnp.sqrt(jnp.sum((points - self.bin_centers[ix]) ** 2, axis=-1))
-            m = dist < min_dist
-            assignments = assignments.at[m].set(ix)
-            min_dist = min_dist.at[m].set(dist[m])
-        return assignments
+        d = lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2, axis=-1))
+        return jnp.argmin(jax.vmap(d, (None, 0), 1)(points, self.bin_centers), axis=1)
 
 
 class ADHMM:
+    @timeit
     def __init__(self, args):
         self.args = args
         self.output_file = self.args.output_file
@@ -96,6 +111,7 @@ class ADHMM:
             (2, 1, 0): 5,
         }
 
+    @timeit
     def select_clades(self, num_clades):
         partitions = [copy.deepcopy(self.species_tree)]
         selected_clades = []
@@ -118,6 +134,7 @@ class ADHMM:
         selected_clades = [label for label in selected_clades if label is not None]
         return selected_clades
 
+    @timeit
     def select_best_clade(self, tree):
         nd_l, pscore_l = [], []
         for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
@@ -138,6 +155,7 @@ class ADHMM:
             best_clade = nd_l[best_idx].get_label()
         return best_clade
 
+    @timeit
     def detect_anomalies(self):
         params, props = self.hmm.initialize()
         em_params, log_probs = self.hmm.fit_em(params, props, self.obs, num_iters=500)
@@ -159,6 +177,7 @@ class ADHMM:
 
 
 class QQSHMM(ADHMM):
+    @timeit
     def __init__(self, args):
         super().__init__(args)
         self.msc = MSC(self.species_tree, self.gene_trees)
@@ -273,9 +292,8 @@ class BCBHMM(QQSHMM):
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * (
-            (jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS
-        )
+        s = jnp.mean(obs[:, 0])
+        return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
 
 
 # Dominant Topology Ordering HMM
@@ -320,9 +338,8 @@ class DTOHMM(QQSHMM):
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * (
-            (jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS
-        )
+        s = jnp.mean(obs[:, 0])
+        return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
 
 
 # Most Likely Topology HMM
@@ -360,9 +377,8 @@ class MLTHMM(QQSHMM):
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
         t, c = jnp.unique(self.get_categories(obs), return_counts=True)
-        return entropy(c / c.sum(), base=2) * (
-            (jnp.mean(obs[:, 0]) >= self.lquartile_support) + EPS
-        )
+        s = jnp.mean(obs[:, 0])
+        return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
 
 
 # Consistent Bipartition HMM
