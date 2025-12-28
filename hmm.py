@@ -155,6 +155,7 @@ class PhlagHMMTransitions(HMMTransitions):
                     "A key must be provided if transition_matrix is not provided."
                 )
             else:
+                # TODO: Reconsider this
                 # if method == "prior":
                 tm_sample = tfd.Dirichlet(self.concentration).sample(seed=key)
                 # elif method == "random":
@@ -183,9 +184,7 @@ class PhlagHMMTransitions(HMMTransitions):
         """Compute the transition matrices."""
         return params.transition_matrix
 
-    def collect_suff_stats(
-        self, params, posterior: HMMPosterior, inputs=None
-    ) -> Union[
+    def collect_suff_stats(self, params, posterior: HMMPosterior, inputs=None) -> Union[
         Float[Array, "num_states num_states"],
         Float[Array, "num_timesteps_minus_1 num_states num_states"],
     ]:
@@ -212,8 +211,6 @@ class PhlagHMMTransitions(HMMTransitions):
                 transition_matrix = tfd.Dirichlet(
                     self.concentration + expected_trans_counts
                 ).mode()
-            jax.debug.print("TT {bar}", bar=transition_matrix)
-            jax.debug.print("ET {bar}", bar=expected_trans_counts)
             params = params._replace(transition_matrix=transition_matrix)
         return params, m_step_state
 
@@ -419,15 +416,15 @@ class PhlagHMMEmissions(HMMEmissions):
         under a dot-product repulsion prior.
 
         Objective (MAP form):
-            \argmax_q   \sum_i c_i * log q_i  -  \lambda * \sum_i p_i * q_i
+            \argmax_q   \sum_i c_i * log q_i  -  \delta * \sum_i p_i * q_i
             subject to   \sum_i q_i = 1,  q_i > 0
 
         Closed-form relation:
-            q_i = c_i / (\nu + \lambda p_i)
+            q_i = c_i / (\nu + \delta p_i)
             where \nu is chosen so that sum_i q_i = 1.
         """
 
-        # Define the normalization function f(\nu) = \sum c_i / (\nu + \lambda p_i) - 1.
+        # Define the normalization function f(\nu) = \sum c_i / (\nu + \delta p_i) - 1.
         # We want to find \nu^* such that f(\nu^*) = 0.
         def f(nu):
             return jnp.sum(counts_1 / (nu + self.similarity_penalty * emission_0)) - 1.0
@@ -465,25 +462,25 @@ class PhlagHMMEmissions(HMMEmissions):
         if props.probs.trainable:
             emission_stats = pytree_sum(batch_stats, axis=0)
             probs = params.probs
-            # probs = tfd.Dirichlet(self.prior_concentration + emission_stats["sum_x"]).mode()
-            jax.debug.print("bfore {bar}", bar=probs)
-            jax.debug.print("em {bar}", bar=emission_stats["sum_x"])
-            probs = probs.at[1].set(
-                jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
-                    m_step_state,
-                    (self.prior_concentration + emission_stats["sum_x"])[1],
-                    self.transfer_cost,
-                )
-            )
-            probs = probs.at[0].set(
-                jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(
-                    m_step_state,
-                    (self.prior_concentration + emission_stats["sum_x"])[0],
-                    self.transfer_cost,
-                )
-            )
+            probs = tfd.Dirichlet(
+                self.prior_concentration + emission_stats["sum_x"]
+            ).mode()
+            # probs = probs.at[1].set(
+            #     jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
+            #         m_step_state,
+            #         (self.prior_concentration + emission_stats["sum_x"])[1],
+            #         self.transfer_cost,
+            #     )
+            # )
+            # probs = probs.at[0].set(
+            #     jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(
+            #         m_step_state,
+            #         (self.prior_concentration + emission_stats["sum_x"])[0],
+            #         self.transfer_cost,
+            #     )
+            # )
+            probs = probs.at[0].set(m_step_state)
             params = params._replace(probs=probs)
-            jax.debug.print("after {bar}", bar=probs)
         return params, m_step_state
 
     def probs_dissimilarity(self, params):
@@ -507,7 +504,7 @@ class PhlagHMM(HMM):
     :param num_states: number of discrete states $K$, state 0 is reserved for the null model
     :param emission_dim: number of conditionally independent emissions $N$
     :param num_classes: number of multinomial classes $C$
-    :param emission similarity penalty: $\lambda$
+    :param emission similarity penalty: $\delta$
     :param emission_prior_concentration: $\gamma$
     :param initial_probs_concentration: $\nu$
     :param transition_matrix_concentration: $\psi$
@@ -623,6 +620,7 @@ class PhlagHMM(HMM):
             self.transitions_m_step_state = transitions_m_step_state
         if emissions_m_step_state is not None:
             self.emissions_m_step_state = emissions_m_step_state
+
         if self.initial_m_step_state is None:
             self.initial_m_step_state = self.initial_component.initialize_m_step_state(
                 params.initial, props.initial
@@ -663,11 +661,8 @@ class PhlagHMM(HMM):
         """The E-step computes expected sufficient statistics under the
         posterior. In the generic case, we simply return the posterior itself.
         """
-        # jax.debug.print("EMISSIONS {e}", e=params.emissions.probs)
         args = self._inference_args(params, emissions, inputs)
         posterior = hmm_two_filter_smoother(*args)
-
-        # jax.debug.print("Posterior {bar}", bar=posterior)
 
         initial_stats = self.initial_component.collect_suff_stats(
             params.initial, posterior, inputs
@@ -703,8 +698,6 @@ class PhlagHMM(HMM):
             transitions_m_step_state,
             emissions_m_step_state,
         ) = m_step_state
-
-        # jax.debug.print("STATS {bar}", bar=batch_stats)
 
         initial_params, initial_m_step_state = self.initial_component.m_step(
             params.initial, props.initial, batch_initial_stats, initial_m_step_state

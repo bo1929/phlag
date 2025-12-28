@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import treeswift as ts
+import dendropy
 
 from dynamax.hidden_markov_model import BernoulliHMM, CategoricalHMM, GaussianHMM
 from scipy.stats import entropy, differential_entropy
@@ -258,7 +259,7 @@ class BCBHMM(QQSHMM):
         super().__init__(args)
         self.n_bins = args.n_bins
         self.bcb = BCB(self.n_bins)
-        # self.split_order = args.split_order
+        self.split_order = args.split_order
         self.set_selected_clades()
 
         observed_freqs = []
@@ -270,8 +271,8 @@ class BCBHMM(QQSHMM):
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
         self.obs = jnp.stack(obs, axis=1)[self.mask, :]
         self.num_classes = self.n_bins**2
-        # if self.split_order:
-        #     self.num_classes = self.num_classes * 2
+        if self.split_order:
+            self.num_classes = self.num_classes * 2
 
         self.hmm = CategoricalHMM(
             2,
@@ -285,7 +286,11 @@ class BCBHMM(QQSHMM):
         self.detect_anomalies()
 
     def get_categories(self, obs):
-        return self.bcb.assign_points(obs)
+        if self.split_order:
+            s = jnp.argsort(obs, axis=1)
+            return self.bcb.assign_points(obs) * 2 + (s[:, 0] > s[:, 1]).astype(int)
+        else:
+            return self.bcb.assign_points(obs)
 
     def get_branch_pscore(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
@@ -381,58 +386,11 @@ class MLTHMM(QQSHMM):
         return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
 
 
-# Consistent Bipartition HMM
-class CBPHMM(ADHMM):
-    def __init__(self, args):
-        super().__init__(args)
-        self.set_selected_clades()
-
-        obs = []
-        for clade_labels in self.selected_clades:
-            obs.append(self.get_cbp(clade_labels))
-            self.mask = self.mask & ~jnp.isnan(obs[-1]).any(axis=-1)
-        self.obs = jnp.stack(obs, axis=1)[self.mask, :]
-        self.num_classes = 2
-
-        self.hmm = BernoulliHMM(
-            2,
-            self.obs.shape[1],
-            initial_probs_concentration=1.1,
-            transition_matrix_concentration=1.1,
-            transition_matrix_stickiness=0.0,
-            emission_prior_concentration0=1.1,
-            emission_prior_concentration1=1.1,
-        )
-        self.detect_anomalies()
-
-    def get_cbp(self, clade_label):
-        obs = []
-        clbl_s = {nd.label for nd in self.label_to_node[clade_label].traverse_leaves()}
-        p_nd = self.label_to_node[clade_label].get_parent()
-        for nd in p_nd.child_nodes():
-            if nd.label != clade_label:
-                tlbl = nd.label
-        for ix in range(self.gc):
-            glbl_s = {
-                nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()
-            }
-            if tlbl in glbl_s:
-                obs.append(1)
-            else:
-                obs.append(0)
-        return jnp.array(obs)
-
-    def get_branch_pscore(self, nd):
-        obs = self.get_cbp(nd.get_label())
-        p = jnp.sum(obs) / obs.shape[0]
-        s = entropy([p, 1 - p], base=2)
-        return s
-
-
 # Present Bipartition HMM
 class PBPHMM(ADHMM):
     def __init__(self, args):
         super().__init__(args)
+        self.compute_bipartitions()
         self.set_selected_clades()
 
         obs = []
@@ -453,17 +411,31 @@ class PBPHMM(ADHMM):
         )
         self.detect_anomalies()
 
+    def compute_bipartitions(self):
+        self.tns = dendropy.TaxonNamespace()
+        self.st = dendropy.Tree.get(
+            path=self.args.species_tree,
+            schema="newick",
+            preserve_underscores=True,
+            taxon_namespace=self.tns,
+        )
+        self.st.encode_bipartitions()
+        with open(self.args.gene_trees) as f:
+            self.gt = [
+                dendropy.Tree.get(
+                    data=line.strip(),
+                    schema="newick",
+                    preserve_underscores=True,
+                    taxon_namespace=self.tns,
+                )
+                for line in f
+            ]
+
     def get_pbp(self, clade_label):
+        edge = self.st.find_node_with_label(clade_label).edge
         obs = []
-        clbl_s = {nd.label for nd in self.label_to_node[clade_label].traverse_leaves()}
         for ix in range(self.gc):
-            glbl_s = {
-                nd.label for nd in self.gene_trees[ix].mrca(clbl_s).traverse_leaves()
-            }
-            if clbl_s == glbl_s:
-                obs.append(1)
-            else:
-                obs.append(0)
+            obs.append(self.gt[ix].is_compatible_with_bipartition(edge.bipartition))
         return jnp.array(obs)
 
     def get_branch_pscore(self, nd):
@@ -539,11 +511,11 @@ def parse_arguments():
         action="store_true",
         help="Apply isometric log-ratio transformation on QQS values",
     )
-    # bcbhmm_parser.add_argument(
-    #     "--split-order",
-    #     action="store_true",
-    #     help="Split bins into two based on the order",
-    # )
+    bcbhmm_parser.add_argument(
+        "--split-order",
+        action="store_true",
+        help="Split bins into two based on the order",
+    )
     bcbhmm_parser.add_argument(
         "--n-bins", type=int, default=6, help="The number of bins at each axis"
     )
@@ -554,8 +526,6 @@ def main():
     args = parse_arguments()
     if args.command == "pbp-hmm":
         PBPHMM(args)
-    elif args.command == "cbp-hmm":
-        CBPHMM(args)
     elif args.command == "mlt-hmm":
         MLTHMM(args)
     elif args.command == "dto-hmm":
