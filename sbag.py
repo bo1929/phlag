@@ -173,6 +173,16 @@ class ADHMM:
     def set_selected_clades(self):
         if self.clade_labels:
             self.selected_clades = self.clade_labels
+            # TODO make optional
+            clades_expanded = []
+            for clade in self.args.clade_labels:
+                node = self.label_to_node[clade]
+                parent = node.get_parent()
+                if parent is not None and parent.get_label() is not None:
+                    clades_expanded.append(parent.get_label())
+                for child in node.child_nodes():
+                    if child is not None and not child.is_leaf() and child.get_label() is not None:
+                        clades_expanded.append(child.get_label())
         else:
             self.selected_clades = self.select_clades(self.args.num_clades)
 

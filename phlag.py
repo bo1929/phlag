@@ -17,6 +17,7 @@ from sklearn.exceptions import ConvergenceWarning
 from skbio.stats.composition import ilr, multi_replace
 import tensorflow_probability.substrates.jax.distributions as tfd
 
+from dynamax.hidden_markov_model import BernoulliHMM, CategoricalHMM, GaussianHMM # TODO: Remove
 from jaxtyping import Array, Float, Int
 from typing import Union
 
@@ -36,8 +37,8 @@ INITIAL_PROBS = jnp.array([1.0000, 0.0000], dtype=jnp.float32)
 BRANCH_LENGTH_LAMBDA = 0.5
 MIN_BRANCH_LENGTH = 1e-6
 
-E_STEP_EPS = 0.001
-PSI_EPS = 0.1
+E_STEP_EPS = 0.0001
+PSI_EPS = 0.01
 
 
 # TODO: Disc and args!!!
@@ -66,23 +67,24 @@ class Phlag:
         self.output_str += "\n# " + self.species_tree.newick()
 
         # Initialize the discretization function and select the best number of classes for categorical emissions
-        self.discr = discr.KMeansDiscretization(
-            self.observed_freqs.shape[1],
-            self.observed_freqs.shape[2],
-            self.num_classes_max,
-        )
-        self.discr.choose_num_classes(
-            self.observed_freqs,
-            range_classes=(self.num_classes_min, self.num_classes_max),
-        )
+        # self.discr = discr.KMeansDiscretization(
+        #     self.observed_freqs.shape[1],
+        #     self.observed_freqs.shape[2],
+        #     self.num_classes_max,
+        # )
+        # self.discr.choose_num_classes(
+        #     self.observed_freqs,
+        #     range_classes=(self.num_classes_min, self.num_classes_max),
+        # )
+        self.discr = discr.DTO()
         self.num_classes = self.discr.get_num_classes()
-        self.discr.fit_discretization(self.observed_freqs)
-        self.observed_emissions = self.discr.discretize_obs(self.observed_freqs)
+        # self.discr.fit_discretization(self.observed_freqs)
+        self.observed_emissions = self.discr.discretize_freqs(self.observed_freqs)
 
         # Obtain the initial simulated emissions from the species tree
         self.num_reps = self.args.num_reps
         simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
-        self.simulated_emission_prob = self.discr.compute_null_emission_prob(
+        self.simulated_emission_prob = self.discr.compute_emission_prob(
             self.transform_freqs(simulated_freqs)
         )
 
@@ -93,6 +95,7 @@ class Phlag:
         self.species_tree = utils.label_tree(
             ts.read_tree_newick(self.args.species_tree)
         )
+        self.species_tree.suppress_unifurcations()
         self.label_to_node = self.species_tree.label_to_node(selection="all")
         with open(self.args.gene_trees) as f:
             self.gene_trees = [ts.read_tree_newick(line.strip()) for line in f]
@@ -115,6 +118,17 @@ class Phlag:
         # Select clades across the tree to use for emissions
         if self.args.clade_labels:
             self.clade_labels = self.args.clade_labels
+            clades_expanded = []
+            for clade in self.args.clade_labels:
+                node = self.label_to_node[clade]
+                parent = node.get_parent()
+                if parent is not None and parent.get_label() is not None:
+                    clades_expanded.append(parent.get_label())
+                for child in node.child_nodes():
+                    if child is not None and not child.is_leaf() and child.get_label() is not None:
+                        clades_expanded.append(child.get_label())
+            for clade in clades_expanded:
+                self.clade_labels.append(clade)
         else:
             self.clade_labels = self.select_clades(self.args.num_clades)
         self.num_clades = len(self.clade_labels)
@@ -184,7 +198,7 @@ class Phlag:
         # discr_curr.choose_num_classes(freqs_masked, range_classes=(self.num_classes_min, self.num_classes_max))
         discr_curr.fit_discretization(freqs_masked)
         return entropy(
-            discr_curr.compute_null_emission_prob(freqs_masked)[0, :], base=2
+            discr_curr.compute_emission_prob(freqs_masked)[0, :], base=2
         )
 
     def read_qqs_freqs(self, path):
@@ -241,7 +255,7 @@ class Phlag:
         if self.ilr_transform:
             x = []
             for i in range(freqs.shape[1]):
-                x.append(ilr(multi_replace(freqs[:, i, :], delta=1e-5)))
+                x.append(ilr(multi_replace(freqs[:, i, :], delta=1e-7)))
             return jnp.stack(x, axis=1)
         else:
             return freqs[:, :, :]
@@ -266,7 +280,7 @@ class Phlag:
         self.psi = self.psi.at[0, 1].set(self.beta_0)
         self.psi = self.psi.at[-1, -1].set(self.alpha_1)
         self.psi = self.psi.at[-1, 0].set(self.beta_1)
-        pwdist = jnp.array(self.discr.pairwise_cluster_distances())
+        C = jnp.array(self.discr.get_cost_matrices(self.num_clades))
 
         self.prior_concentration = self.gamma * jnp.ones(self.num_classes)
         prior = tfd.Dirichlet(self.prior_concentration)
@@ -278,7 +292,7 @@ class Phlag:
             self.num_classes,
             emission_similarity_penalty=self.delta,
             emission_prior_concentration=self.gamma,
-            emission_transfer_cost=pwdist,
+            emission_transfer_cost=C,
             initial_probs_concentration=self.nu,
             transition_matrix_concentration=self.psi + PSI_EPS,
         )
@@ -305,7 +319,7 @@ class Phlag:
         )
         self.update_branch_lengths(ps)
         simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
-        simulated_emission_prob = self.discr.compute_null_emission_prob(
+        simulated_emission_prob = self.discr.compute_emission_prob(
             self.transform_freqs(simulated_freqs)
         )
 
@@ -355,6 +369,40 @@ class Phlag:
             f.write(self.output_str)
 
     def run(self):
+        # self.num_classes = discr.choose_num_classes(self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max+1))
+        # bcb = discr.BCB(self.num_classes)
+        # self.num_classes = self.num_classes ** 2
+        # self.observed_emissions = bcb.assign_points(self.observed_freqs)
+
+        # s = jnp.argsort(self.observed_freqs, axis=1)
+        # self.observed_emissions = self.observed_emissions * 2 + (s[:, 0] > s[:, 1]).astype(int)
+        # self.num_classes *= 2
+
+        # hmm = CategoricalHMM(
+        #     2,
+        #     self.observed_emissions.shape[1],
+        #     initial_probs_concentration=1.1,
+        #     transition_matrix_concentration=1.1,
+        #     transition_matrix_stickiness=0.0,
+        #     emission_prior_concentration=1.1,
+        #     num_classes= self.num_classes
+        # )
+        # params, props = hmm.initialize()
+        # em_params, log_probs = hmm.fit_em(params, props, self.observed_emissions, num_iters=500)
+        # most_likely_states = hmm.most_likely_states(em_params, self.observed_emissions)
+
+        # self.output_str = f"# {' '.join(sys.argv)}"
+        # self.clade_labels = self.args.clade_labels
+        # self.output_str += "\n# " + self.species_tree.newick()
+        # self.output_str += "\n" + ",".join(
+        #     map(lambda x: str(x), most_likely_states.astype(int).tolist())
+        # )
+        # self.output_str += "\n" + ",".join(
+        #     map(lambda x: str(x), self.observed_emissions[:, :].sum(axis=1).tolist())
+        # )
+        # with open(self.output_file, "w") as f:
+        #     f.write(self.output_str)
+
         for i in tqdm(range(self.num_iters)):
             num_iters = (i + 1) * 10
             self.params, log_probs = self.hmm.fit_em(
@@ -431,6 +479,11 @@ def parse_arguments():
         default=1,
         choices=[0, 1, 2, 3],
         help="Verbosity level: 0=quiet, 1=normal, 2=verbose, 3=debug (default: 1)",
+    )
+    parser.add_argument(
+        "--expand",
+        action="store_true",
+        help="Incorporate the neighboring branches.",
     )
     parser.add_argument(
         "--dry-run",

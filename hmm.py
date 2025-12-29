@@ -79,12 +79,6 @@ def l2(p, q):
     return jnp.sqrt(jnp.sum((p - q) ** 2))
 
 
-def fdist(emission_0, emission_1):
-    # return total_variation_distance(emission_1, emission_0)
-    return hellinger_distance(emission_1, emission_0)
-    # return wasserstein_distance(emission_1, emission_0, C)
-
-
 def wasserstein_distance(p, q, C, lam=100.0, lr=0.1, n_iter=50):
     K = C.shape[0]
     T = jnp.ones((K, K)) / K**2
@@ -108,6 +102,12 @@ def wasserstein_distance(p, q, C, lam=100.0, lr=0.1, n_iter=50):
     T_opt = jax.lax.fori_loop(0, n_iter, body_fn, T)
     W = jnp.sum(T_opt * C)
     return W / jnp.max(C)
+
+
+def fdist(emission_0, emission_1, C=None):
+    # return total_variation_distance(emission_1, emission_0)
+    return hellinger_distance(emission_1, emission_0)
+    # return wasserstein_distance(emission_1, emission_0, C)
 
 
 class PhlagHMMTransitions(HMMTransitions):
@@ -315,7 +315,6 @@ class PhlagHMMEmissions(HMMEmissions):
                 self.num_classes,
             )
             assert jnp.all(emission_probs >= 0)
-            print(emission_probs.sum(axis=2))
             # assert jnp.allclose(emission_probs.sum(axis=2), 1.0)
 
         # Add parameters to the dictionary
@@ -359,9 +358,7 @@ class PhlagHMMEmissions(HMMEmissions):
             # Negative log-likelihood (from multinomial distribution).
             neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
             # Negative log-prior without the normalization factor
-            neg_log_prior = self.similarity_penalty * fdist(emission_1, emission_0)
-            jax.debug.print("prior0 {bar}", bar=neg_log_prior)
-            jax.debug.print("likelihood0 {bar}", bar=neg_log_likelihood)
+            neg_log_prior = self.similarity_penalty * fdist(emission_1, emission_0, C)
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
@@ -369,8 +366,6 @@ class PhlagHMMEmissions(HMMEmissions):
             fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4
         )
         # Notice that this is not bounded (hence softmax is needed)
-        jax.debug.print("E0 {bar}", bar=softmax(result.x))
-        jax.debug.print("HDISTANCE {bar}", bar=fdist(softmax(result.x), emission_0))
         return softmax(result.x)
 
     def map_with_arbitrary(self, emission_0, counts_1, C=None):
@@ -394,10 +389,8 @@ class PhlagHMMEmissions(HMMEmissions):
             neg_log_likelihood = -jnp.sum(counts_1 * jnp.log(emission_1 + 1e-10))
             # Negative log-prior without the normalization factor
             neg_log_prior = self.similarity_penalty * (
-                1 - fdist(emission_1, emission_0)
+                1 - fdist(emission_1, emission_0, C)
             )
-            jax.debug.print("prior1 {bar}", bar=neg_log_prior)
-            jax.debug.print("likelihood1 {bar}", bar=neg_log_likelihood)
             return neg_log_likelihood + neg_log_prior
 
         initial_logits = emission_0
@@ -405,9 +398,6 @@ class PhlagHMMEmissions(HMMEmissions):
             fun=neg_log_posterior, x0=initial_logits, method="BFGS", tol=1e-4
         )
         # Notice that this is not bounded (hence softmax is needed)
-
-        jax.debug.print("E1 {bar}", bar=softmax(result.x))
-        jax.debug.print("HDISTANCE {bar}", bar=fdist(softmax(result.x), emission_0))
         return softmax(result.x)
 
     def map_with_lagrange(self, emission_0, counts_1, tol=1e-8, max_iter=1000):
@@ -465,13 +455,13 @@ class PhlagHMMEmissions(HMMEmissions):
             probs = tfd.Dirichlet(
                 self.prior_concentration + emission_stats["sum_x"]
             ).mode()
-            # probs = probs.at[1].set(
-            #     jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
-            #         m_step_state,
-            #         (self.prior_concentration + emission_stats["sum_x"])[1],
-            #         self.transfer_cost,
-            #     )
-            # )
+            probs = probs.at[1].set(
+                jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
+                    m_step_state,
+                    (self.prior_concentration + emission_stats["sum_x"])[1],
+                    self.transfer_cost,
+                )
+            )
             # probs = probs.at[0].set(
             #     jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(
             #         m_step_state,
@@ -479,7 +469,7 @@ class PhlagHMMEmissions(HMMEmissions):
             #         self.transfer_cost,
             #     )
             # )
-            probs = probs.at[0].set(m_step_state)
+            # probs = probs.at[0].set(m_step_state)
             params = params._replace(probs=probs)
         return params, m_step_state
 
