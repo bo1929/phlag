@@ -25,30 +25,32 @@ class DTO:
             (2, 1, 0): 5,
         }
         self.perm_to_dist = {
-            0: jnp.array([0, 1.0/3.0, 2.0/3.0]),
-            1: jnp.array([0, 2.0/3.0, 1.0/3.0]),
-            2: jnp.array([1.0/3.0, 0, 2.0/3.0]),
-            3: jnp.array([1.0/3.0, 2.0/3.0, 0]),
-            4: jnp.array([2.0/3.0, 0, 1.0/3.0]),
-            5: jnp.array([2.0/3.0, 2.0/3.0, 0]),
+            0: jnp.array([0, 1.0 / 3.0, 2.0 / 3.0]),
+            1: jnp.array([0, 2.0 / 3.0, 1.0 / 3.0]),
+            2: jnp.array([1.0 / 3.0, 0, 2.0 / 3.0]),
+            3: jnp.array([1.0 / 3.0, 2.0 / 3.0, 0]),
+            4: jnp.array([2.0 / 3.0, 0, 1.0 / 3.0]),
+            5: jnp.array([2.0 / 3.0, 2.0 / 3.0, 0]),
         }
 
     def discretize_freqs(self, freqs):
         emissions = []
         for i in range(freqs.shape[1]):
-            emissions.append(jnp.array(
-            list(
-                map(
-                    lambda x: self.perm_to_int[tuple(x.tolist())],
-                    jnp.argsort(freqs[:, i, :], axis=-1),
+            emissions.append(
+                jnp.array(
+                    list(
+                        map(
+                            lambda x: self.perm_to_int[tuple(x.tolist())],
+                            jnp.argsort(freqs[:, i, :], axis=-1),
+                        )
+                    )
                 )
             )
-        ))
         return jnp.stack(emissions, axis=1)
 
     def get_num_classes(self):
         return len(self.perm_to_int)
-    
+
     def compute_emission_prob(self, freqs: Float[Array, "_ emission_dim input_dim"]):
         emission_prob = jnp.zeros((freqs.shape[1], self.get_num_classes()))
         emissions = self.discretize_freqs(freqs)
@@ -64,16 +66,17 @@ class DTO:
                 emission_prob[i, :] + PEPS
             ) / jnp.sum(emission_prob[i, :] + PEPS)
         return emission_prob
-    
-    def get_cost_matrices(self, emission_dim = 1):
+
+    def get_cost_matrices(self, emission_dim=1):
         C = jnp.zeros((emission_dim, self.get_num_classes(), self.get_num_classes()))
         for i in range(self.get_num_classes()):
             for j in range(self.get_num_classes()):
                 p = self.perm_to_dist[i]
                 q = self.perm_to_dist[j]
-                C = C.at[:, i, j].set(jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0))
+                C = C.at[:, i, j].set(
+                    jnp.sqrt(jnp.sum((jnp.sqrt(p) - jnp.sqrt(q)) ** 2)) / jnp.sqrt(2.0)
+                )
         return C
-        
 
 
 class BCB:
@@ -82,7 +85,7 @@ class BCB:
         self.bins, self.bin_centers = self.create_bins()
 
     def get_num_classes(self):
-        return self.n_bins ** 2
+        return self.n_bins**2
 
     def create_bins(self):
         bins = []
@@ -169,7 +172,6 @@ def choose_num_classes(data, range_classes=(2, 81)):
         file=sys.stderr,
     )
     return best_num_classes
-
 
 
 class Discretization:

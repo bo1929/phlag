@@ -181,7 +181,11 @@ class ADHMM:
                 if parent is not None and parent.get_label() is not None:
                     clades_expanded.append(parent.get_label())
                 for child in node.child_nodes():
-                    if child is not None and not child.is_leaf() and child.get_label() is not None:
+                    if (
+                        child is not None
+                        and not child.is_leaf()
+                        and child.get_label() is not None
+                    ):
                         clades_expanded.append(child.get_label())
         else:
             self.selected_clades = self.select_clades(self.args.num_clades)

@@ -17,7 +17,11 @@ from sklearn.exceptions import ConvergenceWarning
 from skbio.stats.composition import ilr, multi_replace
 import tensorflow_probability.substrates.jax.distributions as tfd
 
-from dynamax.hidden_markov_model import BernoulliHMM, CategoricalHMM, GaussianHMM # TODO: Remove
+from dynamax.hidden_markov_model import (
+    BernoulliHMM,
+    CategoricalHMM,
+    GaussianHMM,
+)  # TODO: Remove
 from jaxtyping import Array, Float, Int
 from typing import Union
 
@@ -125,7 +129,11 @@ class Phlag:
                 if parent is not None and parent.get_label() is not None:
                     clades_expanded.append(parent.get_label())
                 for child in node.child_nodes():
-                    if child is not None and not child.is_leaf() and child.get_label() is not None:
+                    if (
+                        child is not None
+                        and not child.is_leaf()
+                        and child.get_label() is not None
+                    ):
                         clades_expanded.append(child.get_label())
             for clade in clades_expanded:
                 self.clade_labels.append(clade)
@@ -197,9 +205,7 @@ class Phlag:
         # TODO: Perhaps do this?
         # discr_curr.choose_num_classes(freqs_masked, range_classes=(self.num_classes_min, self.num_classes_max))
         discr_curr.fit_discretization(freqs_masked)
-        return entropy(
-            discr_curr.compute_emission_prob(freqs_masked)[0, :], base=2
-        )
+        return entropy(discr_curr.compute_emission_prob(freqs_masked)[0, :], base=2)
 
     def read_qqs_freqs(self, path):
         with open(path, "r") as f:
@@ -462,7 +468,7 @@ def parse_arguments():
     parser.add_argument(
         "--num-iters",
         type=int,
-        default=10,
+        default=4,
         help="Number of (outer) iterations (default: 10)",
     )
     parser.add_argument(
@@ -507,7 +513,7 @@ def parse_arguments():
     hmm_group.add_argument(
         "--emission-similarity-penalty",
         type=float,
-        default=0.05,
+        default=0.01,
         help="Hyperparameter to control deviation of anomalies from MSC (default: 0.05)",
     )
     hmm_group.add_argument(

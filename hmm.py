@@ -455,20 +455,20 @@ class PhlagHMMEmissions(HMMEmissions):
             probs = tfd.Dirichlet(
                 self.prior_concentration + emission_stats["sum_x"]
             ).mode()
-            probs = probs.at[1].set(
-                jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
-                    m_step_state,
-                    (self.prior_concentration + emission_stats["sum_x"])[1],
-                    self.transfer_cost,
-                )
-            )
-            # probs = probs.at[0].set(
-            #     jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(
+            # probs = probs.at[1].set(
+            #     jax.vmap(self.map_with_arbitrary, in_axes=(0, 0, 0), out_axes=0)(
             #         m_step_state,
-            #         (self.prior_concentration + emission_stats["sum_x"])[0],
+            #         (self.prior_concentration + emission_stats["sum_x"])[1],
             #         self.transfer_cost,
             #     )
             # )
+            probs = probs.at[0].set(
+                jax.vmap(self.map_with_arbitraryx, in_axes=(0, 0, 0), out_axes=0)(
+                    m_step_state,
+                    (self.prior_concentration + emission_stats["sum_x"])[0],
+                    self.transfer_cost,
+                )
+            )
             # probs = probs.at[0].set(m_step_state)
             params = params._replace(probs=probs)
         return params, m_step_state
