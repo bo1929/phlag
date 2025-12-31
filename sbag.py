@@ -101,7 +101,6 @@ class ADHMM:
         self.mask = jnp.ones(self.gc, dtype=bool)
 
         self.output_str = f"# {' '.join(sys.argv)}"
-        self.clade_labels = self.args.clade_labels
         self.output_str += "\n# " + self.species_tree.newick()
         self.perm_to_int = {
             (0, 1, 2): 0,
@@ -111,12 +110,17 @@ class ADHMM:
             (2, 0, 1): 4,
             (2, 1, 0): 5,
         }
+        self.is_valid = (
+            lambda node: node is not None
+            and not node.is_leaf()
+            and node.get_label() is not None
+        )
 
     @timeit
-    def select_clades(self, num_clades):
+    def select_branches(self, num_branches):
         partitions = [copy.deepcopy(self.species_tree)]
-        selected_clades = []
-        while len(partitions) < num_clades:
+        branches = []
+        while len(partitions) < num_branches:
             lp, ix_lp = partitions[-1], len(partitions)
             for ix, p in enumerate(partitions):
                 if p.num_nodes(leaves=True) >= lp.num_nodes(leaves=True):
@@ -131,12 +135,12 @@ class ADHMM:
                 for tree in partitions
                 if tree.num_nodes(leaves=True, internal=False) > 2
             ]
-        selected_clades = [self.select_best_clade(tree) for tree in partitions]
-        selected_clades = [label for label in selected_clades if label is not None]
-        return selected_clades
+        branches = [self.select_best_branch(tree) for tree in partitions]
+        branches = [label for label in branches if label is not None]
+        return branches
 
     @timeit
-    def select_best_clade(self, tree):
+    def select_best_branch(self, tree):
         nd_l, pscore_l = [], []
         for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
             if (
@@ -145,16 +149,16 @@ class ADHMM:
                 or (nd.get_parent() is None)
             ):
                 continue
-            s = self.get_branch_pscore(nd)
+            s = self.get_branch_enf(nd)
             if utils.is_float(s):
                 nd_l.append(nd)
                 pscore_l.append(s)
         if not nd_l:
-            best_clade = None
+            best_branch = None
         else:
             best_idx = jnp.argmax(jnp.array(pscore_l))
-            best_clade = nd_l[best_idx].get_label()
-        return best_clade
+            best_branch = nd_l[best_idx].get_label()
+        return best_branch
 
     @timeit
     def detect_anomalies(self):
@@ -170,25 +174,27 @@ class ADHMM:
         with open(self.output_file, "w") as f:
             f.write(self.output_str)
 
-    def set_selected_clades(self):
-        if self.clade_labels:
-            self.selected_clades = self.clade_labels
-            # TODO make optional
-            clades_expanded = []
-            for clade in self.args.clade_labels:
-                node = self.label_to_node[clade]
-                parent = node.get_parent()
-                if parent is not None and parent.get_label() is not None:
-                    clades_expanded.append(parent.get_label())
-                for child in node.child_nodes():
-                    if (
-                        child is not None
-                        and not child.is_leaf()
-                        and child.get_label() is not None
-                    ):
-                        clades_expanded.append(child.get_label())
+    def set_target_branches(self):
+        # Select branches across the tree to use for emissions
+        if self.args.branches:
+            self.branches = []
+            for label in self.args.branches:
+                if self.args.expand_branches:
+                    node = self.label_to_node[label]
+                    parent = node.get_parent()
+                    if self.is_valid(parent):
+                        self.branches.append(parent.get_label())
+                    for child in parent.child_nodes():
+                        if self.is_valid(child):
+                            self.branches.append(child.get_label())
+                    for child in node.child_nodes():
+                        if self.is_valid(child):
+                            self.branches.append(child.get_label())
+                else:
+                    self.branches.append(label)
         else:
-            self.selected_clades = self.select_clades(self.args.num_clades)
+            self.branches = self.select_branches(self.args.num_branches)
+        self.num_branches = len(self.branches)
 
 
 class QQSHMM(ADHMM):
@@ -196,8 +202,20 @@ class QQSHMM(ADHMM):
     def __init__(self, args):
         super().__init__(args)
         self.msc = MSC(self.species_tree, self.gene_trees)
-        self.label_to_freqs = self.msc.compute_qqs_freqs()
+        if not self.args.read_qqs_freqs:
+            self.label_to_freqs = self.msc.compute_qqs_freqs()
+            if self.args.write_qqs_freqs:
+                self.write_qqs_freqs(self.args.write_qqs_freqs)
+        else:
+            self.label_to_freqs = {}
+            self.read_qqs_freqs(self.args.read_qqs_freqs)
         self.compute_branch_lengths()
+        self.is_valid = (
+            lambda node: node is not None
+            and not node.is_leaf()
+            and node.get_label() is not None
+            and node.get_label in self.label_to_freqs.keys()
+        )
 
         self.label_to_support = {}
         supports_arr = jnp.empty(len(self.label_to_freqs))
@@ -228,16 +246,48 @@ class QQSHMM(ADHMM):
             final_bl = max(bl, MIN_BRANCH_LENGTH)
             nd.set_edge_length(final_bl)
 
+    def read_qqs_freqs(self, path):
+        with open(path, "r") as f:
+            for i, line in enumerate(f):
+                if i == 0:
+                    continue
+                values = line.strip().split("\t")
+                label = values[0]
+                topology = int(values[1]) - 1
+                freq_y = jnp.array([float(x) for x in values[2:]])
+                qqs_freq = self.label_to_freqs.get(
+                    label, jnp.zeros((freq_y.shape[0], 3))
+                )
+                self.label_to_freqs[label] = qqs_freq.at[:, topology].set(freq_y)
+
+    def write_qqs_freqs(self, path):
+        with open(path, "w") as f:
+            header = "branch\ty\t" + "\t".join(f"g_{i}" for i in range(1, self.gc + 1))
+            f.write(header)
+            for label, freqs in self.label_to_freqs.items():
+                if freqs.shape[0] == 0:
+                    continue
+                for topology in range(3):
+                    buffer = StringIO()
+                    np.savetxt(
+                        buffer,
+                        freqs[:, topology],
+                        delimiter="",
+                        newline="\t",
+                        fmt="%.4f",
+                    )
+                    f.write(f"\n{label}\t{topology + 1}\t{buffer.getvalue()[:-1]}")
+
 
 # Gaussian Quartet Supports HMM
 class GQSHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
-        self.set_selected_clades()
+        self.set_target_branches()
 
         observed_freqs = []
-        for clade in self.selected_clades:
-            observed_freqs.append(self.label_to_freqs[clade])
+        for branch in self.branches:
+            observed_freqs.append(self.label_to_freqs[branch])
             self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
 
@@ -262,7 +312,7 @@ class GQSHMM(QQSHMM):
         )
         self.detect_anomalies()
 
-    def get_branch_pscore(self, nd):
+    def get_branch_enf(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         return -(jnp.mean(obs[:, 0]) - self.lquartile_support)
 
@@ -273,20 +323,17 @@ class BCBHMM(QQSHMM):
         super().__init__(args)
         self.n_bins = args.n_bins
         self.bcb = BCB(self.n_bins)
-        self.split_order = args.split_order
-        self.set_selected_clades()
+        self.set_target_branches()
 
         observed_freqs = []
         obs = []
-        for clade in self.selected_clades:
-            observed_freqs.append(self.label_to_freqs[clade])
+        for branch in self.branches:
+            observed_freqs.append(self.label_to_freqs[branch])
             obs.append(self.get_categories(observed_freqs[-1]))
             self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
         self.obs = jnp.stack(obs, axis=1)[self.mask, :]
         self.num_classes = self.n_bins**2
-        if self.split_order:
-            self.num_classes = self.num_classes * 2
 
         self.hmm = CategoricalHMM(
             2,
@@ -300,13 +347,9 @@ class BCBHMM(QQSHMM):
         self.detect_anomalies()
 
     def get_categories(self, obs):
-        if self.split_order:
-            s = jnp.argsort(obs, axis=1)
-            return self.bcb.assign_points(obs) * 2 + (s[:, 0] > s[:, 1]).astype(int)
-        else:
-            return self.bcb.assign_points(obs)
+        return self.bcb.assign_points(obs)
 
-    def get_branch_pscore(self, nd):
+    def get_branch_enf(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
@@ -319,12 +362,12 @@ class BCBHMM(QQSHMM):
 class DTOHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
-        self.set_selected_clades()
+        self.set_target_branches()
 
         observed_freqs = []
         obs = []
-        for clade in self.selected_clades:
-            observed_freqs.append(self.label_to_freqs[clade])
+        for branch in self.branches:
+            observed_freqs.append(self.label_to_freqs[branch])
             obs.append(self.get_categories(observed_freqs[-1]))
             self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
@@ -352,7 +395,7 @@ class DTOHMM(QQSHMM):
             )
         )
 
-    def get_branch_pscore(self, nd):
+    def get_branch_enf(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
@@ -365,12 +408,12 @@ class DTOHMM(QQSHMM):
 class MLTHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
-        self.set_selected_clades()
+        self.set_target_branches()
 
         obs = []
         observed_freqs = []
-        for clade in self.selected_clades:
-            observed_freqs.append(self.label_to_freqs[clade])
+        for branch in self.branches:
+            observed_freqs.append(self.label_to_freqs[branch])
             obs.append(self.get_categories(observed_freqs[-1]))
             self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
@@ -391,7 +434,7 @@ class MLTHMM(QQSHMM):
     def get_categories(self, obs):
         return jnp.argmax(obs, axis=-1)
 
-    def get_branch_pscore(self, nd):
+    def get_branch_enf(self, nd):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
@@ -405,11 +448,11 @@ class PBPHMM(ADHMM):
     def __init__(self, args):
         super().__init__(args)
         self.compute_bipartitions()
-        self.set_selected_clades()
+        self.set_target_branches()
 
         obs = []
-        for clade_labels in self.selected_clades:
-            obs.append(self.get_pbp(clade_labels))
+        for branch in self.branches:
+            obs.append(self.get_pbp(branch))
             self.mask = self.mask & ~jnp.isnan(obs[-1]).any(axis=-1)
         self.obs = jnp.stack(obs, axis=1)[self.mask, :]
         self.num_classes = 2
@@ -445,14 +488,14 @@ class PBPHMM(ADHMM):
                 for line in f
             ]
 
-    def get_pbp(self, clade_label):
-        edge = self.st.find_node_with_label(clade_label).edge
+    def get_pbp(self, branch):
+        edge = self.st.find_node_with_label(branch).edge
         obs = []
         for ix in range(self.gc):
             obs.append(self.gt[ix].is_compatible_with_bipartition(edge.bipartition))
         return jnp.array(obs)
 
-    def get_branch_pscore(self, nd):
+    def get_branch_enf(self, nd):
         obs = self.get_pbp(nd.get_label())
         p = jnp.sum(obs) / obs.shape[0]
         s = entropy([p, 1 - p], base=2)
@@ -475,17 +518,22 @@ def add_shared_arguments(parser):
         help="Path to file for ordered gene trees (one Newick tree per line)",
     )
     parser.add_argument(
-        "-c",
-        "--clade-labels",
+        "-b",
+        "--branches",
         nargs="*",
         type=str,
-        help="Specific clade labels to analyze (auto-selected if not provided)",
+        help="Specific branch labels to analyze (auto-selected if not provided)",
     )
     parser.add_argument(
-        "--num-clades",
+        "--num-branches",
         type=int,
         default=5,
-        help="Minimum number of clades to automatically select",
+        help="Minimum number of branches to automatically select",
+    )
+    parser.add_argument(
+        "--expand-branches",
+        action="store_true",
+        help="Incorporate the neighboring branches.",
     )
     parser.add_argument(
         "-o",
@@ -493,6 +541,17 @@ def add_shared_arguments(parser):
         type=pathlib.Path,
         required=True,
         help="Path to output file",
+    )
+    io_group = parser.add_argument_group("I/O options")
+    io_group.add_argument(
+        "--write-qqs-freqs",
+        type=pathlib.Path,
+        help="Write quartet frequencies to the given filepath",
+    )
+    io_group.add_argument(
+        "--read-qqs-freqs",
+        type=pathlib.Path,
+        help="Read quartet frequencies from the given filepath",
     )
     return parser
 
@@ -524,11 +583,6 @@ def parse_arguments():
         "--apply-ilr",
         action="store_true",
         help="Apply isometric log-ratio transformation on QQS values",
-    )
-    bcbhmm_parser.add_argument(
-        "--split-order",
-        action="store_true",
-        help="Split bins into two based on the order",
     )
     bcbhmm_parser.add_argument(
         "--n-bins", type=int, default=6, help="The number of bins at each axis"
