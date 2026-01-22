@@ -8,3 +8,4 @@ tqdm==4.66.5
 treeswift==1.1.45
 scikit-learn==1.5.2
 scikit-bio==0.7.0
+DendroPy==5.0.8

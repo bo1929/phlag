@@ -1,7 +1,11 @@
 import sys
+import math
 import argparse
 import copy
 import pathlib
+
+from io import StringIO
+import numpy as np
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +16,9 @@ import dendropy
 from dynamax.hidden_markov_model import BernoulliHMM, CategoricalHMM, GaussianHMM
 from scipy.stats import entropy, differential_entropy
 from skbio.stats.composition import ilr, multi_replace
+
+import sklearn.cluster as cluster
+from sklearn.metrics import silhouette_samples, silhouette_score
 
 import utils
 
@@ -25,10 +32,66 @@ BRANCH_LENGTH_LAMBDA = 0.5
 MIN_BRANCH_LENGTH = 1e-6
 
 
+class KMeansDiscretization():
+    def __init__(self, emission_dim: int, input_dim: int, num_classes: int):
+        self.emission_dim = emission_dim
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        self.cl = []
+        self.f = [
+            cluster.KMeans(n_clusters=self.num_classes) for _ in range(emission_dim)
+        ]
+
+    def get_num_classes(self):
+        return self.num_classes
+
+    def choose_num_classes(freqs, range_classes=(2, 81)):
+        assert range_classes[0] < range_classes[1]
+        assert range_classes[0] > 1
+        best_num_classes, best_sill_avg = range_classes[0], -1 + 1e-5
+        j = range_classes[0]
+        range_max = range_classes[1] + int(math.sqrt(range_classes[1]))
+        while j < range_max:
+            f = cluster.KMeans(n_clusters=j)
+            sill_avg = 0
+            for i in range(freqs.shape[1]):
+                pred = f.fit_predict(freqs[:, i, :])
+                # if jnp.unique(pred).shape[0] != j: # TODO: Consider this!
+                if jnp.unique(pred).shape[0] == 1:
+                    sill_avg += 0
+                else:
+                    sill_avg += silhouette_score(freqs[:, i, :], pred)
+            sill_avg /= freqs.shape[1]
+            if sill_avg >= best_sill_avg:
+                best_sill_avg = sill_avg
+                best_num_classes = j
+            if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
+                break
+            j += int(math.sqrt(j))
+        return best_num_classes
+
+    def discretize_freqs(self, freqs):
+        assert freqs.shape[2] == self.input_dim
+        assert freqs.shape[1] == self.emission_dim
+        emissions = jnp.zeros((freqs.shape[0], freqs.shape[1]))
+        for i in range(freqs.shape[1]):
+            emissions = emissions.at[:, i].set(self.f[i].predict(freqs[:, i, :]))
+        return emissions.astype(int)
+
+    def fit_discretization(self, freqs):
+        for i in range(freqs.shape[1]):
+            self.f[i].fit(freqs[:, i, :])
+            c = jnp.unique(self.f[i].predict(freqs[:, i, :]), return_counts=True)
+            self.cl.append(c)
+
 class BCB:
     def __init__(self, n_bins):
         self.n_bins = n_bins
         self.bins, self.bin_centers = self.create_bins()
+
+    def get_num_classes(self):
+        return self.n_bins**2
+
 
     def create_bins(self):
         bins = []
@@ -82,6 +145,32 @@ class BCB:
     def assign_points(self, points):
         d = lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2, axis=-1))
         return jnp.argmin(jax.vmap(d, (None, 0), 1)(points, self.bin_centers), axis=1)
+
+    @staticmethod
+    def choose_num_bins(freqs, range_bins=(3, 12)):
+        assert range_bins[0] < range_bins[1]
+        assert range_bins[0] > 1
+        best_num_bins, best_sill_avg = range_bins[0], -1 + 1e-5
+        j = range_bins[0]
+        range_max = range_bins[1] + int(math.sqrt(range_bins[1]))
+        while j < range_max:
+            sill_avg = 0
+            bcb = BCB(j)
+            pred = bcb.assign_points(freqs[:, :, :])
+            for i in range(freqs.shape[1]):
+                if jnp.unique(pred[:, i]).shape[0] == 1:
+                    sill_avg += 0
+                else:
+                    sill_avg += silhouette_score(freqs[:, i, :], pred[:, i])
+            sill_avg /= freqs.shape[1]
+            if sill_avg > best_sill_avg:
+                best_sill_avg = sill_avg
+                best_num_bins = j
+            if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
+                break
+            j += int(math.sqrt(j))  # Regime for the optimal number of bins search
+        return best_num_bins
+
 
 
 class ADHMM:
@@ -214,7 +303,7 @@ class QQSHMM(ADHMM):
             lambda node: node is not None
             and not node.is_leaf()
             and node.get_label() is not None
-            and node.get_label in self.label_to_freqs.keys()
+            and node.get_label() in self.label_to_freqs.keys()
         )
 
         self.label_to_support = {}
@@ -291,7 +380,7 @@ class GQSHMM(QQSHMM):
             self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
 
-        if self.args.apply_ilr:
+        if self.args.transform_ilr:
             obs = []
             for i in range(self.observed_freqs.shape[1]):
                 obs.append(ilr(multi_replace(self.observed_freqs[:, i, :], delta=1e-5)))
@@ -316,24 +405,24 @@ class GQSHMM(QQSHMM):
         obs = self.label_to_freqs[nd.get_label()]
         return -(jnp.mean(obs[:, 0]) - self.lquartile_support)
 
-
-# Barycentric Coordinate Bins HMM
-class BCBHMM(QQSHMM):
+# Clustering Quartet Supports HMM
+class CQSHMM(QQSHMM):
     def __init__(self, args):
         super().__init__(args)
-        self.n_bins = args.n_bins
-        self.bcb = BCB(self.n_bins)
         self.set_target_branches()
 
         observed_freqs = []
-        obs = []
         for branch in self.branches:
-            observed_freqs.append(self.label_to_freqs[branch])
-            obs.append(self.get_categories(observed_freqs[-1]))
-            self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
-        self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
-        self.obs = jnp.stack(obs, axis=1)[self.mask, :]
-        self.num_classes = self.n_bins**2
+            mask = ~jnp.isnan(self.label_to_freqs[branch]).any(axis=-1)
+            self.mask = self.mask & mask
+        for i, branch in enumerate(self.branches):
+            observed_freqs.append(ilr(multi_replace(self.label_to_freqs[branch][self.mask, :], delta=1e-5)))
+        self.observed_freqs = jnp.stack(observed_freqs, axis=1)
+
+        self.num_classes = KMeansDiscretization.choose_num_classes(self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max))
+        discretizer = KMeansDiscretization(self.observed_freqs.shape[1], self.observed_freqs.shape[2], self.num_classes)
+        discretizer.fit_discretization(self.observed_freqs)
+        self.obs = discretizer.discretize_freqs(self.observed_freqs)
 
         self.hmm = CategoricalHMM(
             2,
@@ -346,6 +435,49 @@ class BCBHMM(QQSHMM):
         )
         self.detect_anomalies()
 
+    def get_branch_enf(self, nd):
+        obs = self.label_to_freqs[nd.get_label()]
+        if self.args.transform_ilr:
+            obs = ilr(multi_replace(obs, delta=1e-5))[:, None, :]
+        else:
+            obs = obs[:, None, :]
+        num_classes = KMeansDiscretization.choose_num_classes(obs, (self.args.num_classes_min, self.args.num_classes_max))
+        discretizer = KMeansDiscretization(1, obs.shape[1], num_classes)
+        discretizer.fit_discretization(obs)
+        t, c = jnp.unique(discretizer.discretize_freqs(obs), return_counts=True)
+        s = jnp.mean(obs[:, 0])
+        return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
+
+# Barycentric Coordinate Bins HMM
+class BCBHMM(QQSHMM):
+    def __init__(self, args):
+        super().__init__(args)
+        self.set_target_branches()
+
+        observed_freqs = []
+        for branch in self.branches:
+            observed_freqs.append(self.label_to_freqs[branch])
+            self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
+        self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
+        self.n_bins = BCB.choose_num_bins(self.observed_freqs, (self.args.num_bins_min, self.args.num_bins_max))
+        self.bcb = BCB(self.n_bins)
+
+        obs = []
+        for i in range(self.observed_freqs.shape[1]):
+            obs.append(self.get_categories(self.observed_freqs[:, i, :]))
+        self.obs = jnp.stack(obs, axis=1)
+
+        self.hmm = CategoricalHMM(
+            2,
+            self.obs.shape[1],
+            initial_probs_concentration=1.1,
+            transition_matrix_concentration=1.1,
+            transition_matrix_stickiness=0.0,
+            emission_prior_concentration=1.1,
+            num_classes=self.bcb.get_num_classes(),
+        )
+        self.detect_anomalies()
+
     def get_categories(self, obs):
         return self.bcb.assign_points(obs)
 
@@ -353,7 +485,9 @@ class BCBHMM(QQSHMM):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
-        t, c = jnp.unique(self.get_categories(obs), return_counts=True)
+        n_bins = BCB.choose_num_bins(obs[:, None, :], (self.args.num_bins_min, self.args.num_bins_max))
+        bcb = BCB(n_bins)
+        t, c = jnp.unique(bcb.assign_points(obs), return_counts=True)
         s = jnp.mean(obs[:, 0])
         return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
 
@@ -564,28 +698,58 @@ def parse_arguments():
         description="Anomaly detection using basic HMMs and tree statistics.",
     )
     pbphmm_parser = subparsers.add_parser("pbp-hmm", help="Consistent Bipartition HMM")
-    cbphmm_parser = subparsers.add_parser("cbp-hmm", help="Consistent Bipartition HMM")
     mlthmm_parser = subparsers.add_parser("mlt-hmm", help="Most Likely Topology HMM")
     dtohmm_parser = subparsers.add_parser(
         "dto-hmm", help="Dominant Topology Ordering HMM"
     )
     gqshmm_parser = subparsers.add_parser("gqs-hmm", help="Gaussian Quartet Scores HMM")
+    cqshmm_parser = subparsers.add_parser("cqs-hmm", help="K-means discretization Quartet Scores HMM")
     bcbhmm_parser = subparsers.add_parser(
         "bcb-hmm", help="Barycentric Coordinate Bins HMM"
     )
     pbphmm_parser = add_shared_arguments(pbphmm_parser)
-    cbphmm_parser = add_shared_arguments(cbphmm_parser)
     mlthmm_parser = add_shared_arguments(mlthmm_parser)
     dtohmm_parser = add_shared_arguments(dtohmm_parser)
     gqshmm_parser = add_shared_arguments(gqshmm_parser)
+    cqshmm_parser = add_shared_arguments(cqshmm_parser)
     bcbhmm_parser = add_shared_arguments(bcbhmm_parser)
     gqshmm_parser.add_argument(
-        "--apply-ilr",
+        "--transform-ilr",
         action="store_true",
         help="Apply isometric log-ratio transformation on QQS values",
     )
+    cqshmm_parser.add_argument(
+        "--transform-ilr",
+        action="store_true",
+        help="Apply isometric log-ratio transformation on QQS values",
+    )
+    cqshmm_parser.add_argument(
+        "--num-classes-min",
+        type=int,
+        required=False,
+        default=6,
+        help="Minimum number of classes",
+    )
+    cqshmm_parser.add_argument(
+        "--num-classes-max",
+        type=int,
+        required=False,
+        default=64,
+        help="Maximum number of classes",
+    )
     bcbhmm_parser.add_argument(
-        "--n-bins", type=int, default=6, help="The number of bins at each axis"
+        "--num-bins-min",
+        type=int,
+        required=False,
+        default=2,
+        help="Minimum number of bins (on one axis)",
+    )
+    bcbhmm_parser.add_argument(
+        "--num-bins-max",
+        type=int,
+        required=False,
+        default=12,
+        help="Maximum number of bins (on one axis)",
     )
     return parser.parse_args()
 
@@ -602,6 +766,8 @@ def main():
         BCBHMM(args)
     elif args.command == "gqs-hmm":
         GQSHMM(args)
+    elif args.command == "cqs-hmm":
+        CQSHMM(args)
     else:
         raise ValueError("The given method is not recognized!")
 

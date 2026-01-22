@@ -26,7 +26,7 @@ from jaxtyping import Array, Float, Int
 from typing import Union
 
 import hmm
-import discr
+import discretizer
 import utils
 
 from qqs import QQS, MSC
@@ -71,24 +71,24 @@ class Phlag:
         self.output_str += "\n# " + self.species_tree.newick()
 
         # Initialize the discretization function and select the best number of classes for categorical emissions
-        # self.discr = discr.KMeansDiscretization(
+        # self.discretizer = discretizer.KMeansDiscretization(
         #     self.observed_freqs.shape[1],
         #     self.observed_freqs.shape[2],
         #     self.num_classes_max,
         # )
-        # self.discr.choose_num_classes(
+        # self.discretizer.choose_num_classes(
         #     self.observed_freqs,
         #     range_classes=(self.num_classes_min, self.num_classes_max),
         # )
-        self.discr = discr.DTO()
-        self.num_classes = self.discr.get_num_classes()
-        # self.discr.fit_discretization(self.observed_freqs)
-        self.observed_emissions = self.discr.discretize_freqs(self.observed_freqs)
+        self.discretizer = discretizer.DTO()
+        self.num_classes = self.discretizer.get_num_classes()
+        # self.discretizer.fit_discretization(self.observed_freqs)
+        self.observed_emissions = self.discretizer.discretize_freqs(self.observed_freqs)
 
         # Obtain the initial simulated emissions from the species tree
         self.num_reps = self.args.num_reps
         simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
-        self.simulated_emission_prob = self.discr.compute_emission_prob(
+        self.simulated_emission_prob = self.discretizer.compute_emission_prob(
             self.transform_freqs(simulated_freqs)
         )
 
@@ -120,23 +120,28 @@ class Phlag:
 
     def set_target_clades(self):
         # Select clades across the tree to use for emissions
+        self.is_valid = (
+            lambda node: node is not None
+            and not node.is_leaf()
+            and node.get_label() is not None
+            and node.get_label() in self.label_to_freqs.keys()
+        )
         if self.args.clade_labels:
-            self.clade_labels = self.args.clade_labels
-            clades_expanded = []
-            for clade in self.args.clade_labels:
-                node = self.label_to_node[clade]
-                parent = node.get_parent()
-                if parent is not None and parent.get_label() is not None:
-                    clades_expanded.append(parent.get_label())
-                for child in node.child_nodes():
-                    if (
-                        child is not None
-                        and not child.is_leaf()
-                        and child.get_label() is not None
-                    ):
-                        clades_expanded.append(child.get_label())
-            for clade in clades_expanded:
-                self.clade_labels.append(clade)
+            self.clade_labels = []
+            for label in self.args.clade_labels:
+                if self.args.expand_branches:
+                    node = self.label_to_node[label]
+                    parent = node.get_parent()
+                    if self.is_valid(parent):
+                        self.clade_labels.append(parent.get_label())
+                    for child in parent.child_nodes():
+                        if self.is_valid(child):
+                            self.clade_labels.append(child.get_label())
+                    for child in node.child_nodes():
+                        if self.is_valid(child):
+                            self.clade_labels.append(child.get_label())
+                else:
+                    self.clade_labels.append(label)
         else:
             self.clade_labels = self.select_clades(self.args.num_clades)
         self.num_clades = len(self.clade_labels)
@@ -199,7 +204,7 @@ class Phlag:
         freqs_masked = self.transform_freqs(
             freqs[~jnp.isnan(freqs[:, :]).any(axis=1), None, :]
         )
-        discr_curr = discr.KMeansDiscretization(
+        discr_curr = discretizer.KMeansDiscretization(
             freqs_masked.shape[1], freqs_masked.shape[2], self.num_classes_max
         )
         # TODO: Perhaps do this?
@@ -278,7 +283,7 @@ class Phlag:
         )
         self.beta_0 = self.args.expected_num_anomalies
         self.beta_1 = self.args.expected_num_anomalies
-        self.delta = self.gc * self.args.emission_similarity_penalty
+        self.delta = 1.5 # self.gc * self.args.emission_similarity_penalty
         self.gamma = self.args.emission_prior_concentration
         self.nu = self.args.initial_probs_concentration
         self.psi = jnp.ones((NUM_STATES, NUM_STATES))
@@ -286,7 +291,11 @@ class Phlag:
         self.psi = self.psi.at[0, 1].set(self.beta_0)
         self.psi = self.psi.at[-1, -1].set(self.alpha_1)
         self.psi = self.psi.at[-1, 0].set(self.beta_1)
-        C = jnp.array(self.discr.get_cost_matrices(self.num_clades))
+        # self.psi = self.psi.at[0, 0].set(1.1)
+        # self.psi = self.psi.at[0, 1].set(1.1)
+        # self.psi = self.psi.at[-1, -1].set(1.1)
+        # self.psi = self.psi.at[-1, 0].set(1.1)
+        C = jnp.array(self.discretizer.get_cost_matrices(self.num_clades))
 
         self.prior_concentration = self.gamma * jnp.ones(self.num_classes)
         prior = tfd.Dirichlet(self.prior_concentration)
@@ -325,7 +334,7 @@ class Phlag:
         )
         self.update_branch_lengths(ps)
         simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
-        simulated_emission_prob = self.discr.compute_emission_prob(
+        simulated_emission_prob = self.discretizer.compute_emission_prob(
             self.transform_freqs(simulated_freqs)
         )
 
@@ -356,17 +365,19 @@ class Phlag:
                 )
             )
         )
-        most_likely_states = self.hmm.most_likely_states(
+        most_likely_states = np.full(self.mask.shape, -1)
+        most_likely_states[self.mask] = self.hmm.most_likely_states(
             self.params, self.observed_emissions
         )
-        ps = self.hmm.smoother(self.params, self.observed_emissions).smoothed_probs[
+        ps = np.full(self.mask.shape, np.nan)
+        ps[self.mask] = self.hmm.smoother(self.params, self.observed_emissions).smoothed_probs[
             :, 1
         ]
         self.output_str += "\n# " + self.species_tree.newick()
         self.output_str += "\n# " + branch_lengths
         self.output_str += "\n# " + kldiv_str
         self.output_str += "\n" + ",".join(
-            map(lambda x: str(x), most_likely_states.astype(int).tolist())
+            map(lambda x: str(x) if x >= 0 else "nan", most_likely_states.astype(int).tolist())
         )
         self.output_str += "\n" + ",".join(
             map(lambda x: str(x), jnp.round(ps, decimals=3).tolist())
@@ -375,8 +386,8 @@ class Phlag:
             f.write(self.output_str)
 
     def run(self):
-        # self.num_classes = discr.choose_num_classes(self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max+1))
-        # bcb = discr.BCB(self.num_classes)
+        # self.num_classes = discretizer.choose_num_classes(self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max+1))
+        # bcb = discretizer.BCB(self.num_classes)
         # self.num_classes = self.num_classes ** 2
         # self.observed_emissions = bcb.assign_points(self.observed_freqs)
 
@@ -410,7 +421,7 @@ class Phlag:
         #     f.write(self.output_str)
 
         for i in tqdm(range(self.num_iters)):
-            num_iters = (i + 1) * 10
+            num_iters = (i + 1) * 25
             self.params, log_probs = self.hmm.fit_em(
                 self.params,
                 self.props,
@@ -468,8 +479,8 @@ def parse_arguments():
     parser.add_argument(
         "--num-iters",
         type=int,
-        default=4,
-        help="Number of (outer) iterations (default: 10)",
+        default=5,
+        help="Number of (outer) iterations (default: 5)",
     )
     parser.add_argument(
         "-o",
@@ -487,7 +498,7 @@ def parse_arguments():
         help="Verbosity level: 0=quiet, 1=normal, 2=verbose, 3=debug (default: 1)",
     )
     parser.add_argument(
-        "--expand",
+        "--expand-branches",
         action="store_true",
         help="Incorporate the neighboring branches.",
     )
@@ -514,7 +525,7 @@ def parse_arguments():
         "--emission-similarity-penalty",
         type=float,
         default=0.01,
-        help="Hyperparameter to control deviation of anomalies from MSC (default: 0.05)",
+        help="Hyperparameter to control deviation of anomalies from MSC (default: 0.01)",
     )
     hmm_group.add_argument(
         "--initial-probs-concentration",

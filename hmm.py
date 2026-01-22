@@ -475,8 +475,8 @@ class PhlagHMMEmissions(HMMEmissions):
 
     def probs_dissimilarity(self, params):
         probs = params.probs
-        return jax.vmap(wasserstein_distance, in_axes=(0, 0, 0), out_axes=0)(
-            probs[0], probs[1], self.transfer_cost
+        return jax.vmap(hellinger_distance, in_axes=(0, 0), out_axes=0)(
+            probs[0], probs[1]
         )
 
 

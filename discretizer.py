@@ -46,10 +46,12 @@ class DTO:
                     )
                 )
             )
+            # emissions.append(jnp.argmax(freqs[:, i, :], axis=-1))
         return jnp.stack(emissions, axis=1)
 
     def get_num_classes(self):
-        return len(self.perm_to_int)
+        return len(self.perm_to_int) # 3
+        # return 3
 
     def compute_emission_prob(self, freqs: Float[Array, "_ emission_dim input_dim"]):
         emission_prob = jnp.zeros((freqs.shape[1], self.get_num_classes()))
