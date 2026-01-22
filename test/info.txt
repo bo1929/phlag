@@ -1,0 +1,8 @@
+type: single_independent
+start: 913
+end: 1063
+g_n: concat-default.gtrees
+g_a: concat-anomaly_case-N159_10X_up.gtrees
+p: 0.1
+r: 1.0
+v: []
