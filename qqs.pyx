@@ -68,13 +68,24 @@ cdef class QQS:
         assert not nd.is_root() and not nd.is_leaf()
         assert(len(list(nd.child_nodes())) == 2)
         cdef object x, y, w, z
-        x, y= (self.species_tree.extract_subtree(child).traverse_postorder(internal=False) for child in nd.child_nodes())
+        x, y = (self.species_tree.extract_subtree(child).traverse_postorder(internal=False) for child in nd.child_nodes())
         w = self.species_tree.extract_subtree(nd.parent.child_nodes()[1 if nd.parent.child_nodes()[0] == nd else 0]).traverse_postorder(internal=False)
+        # if nd.parent.parent is not None:
+        #     w = self.species_tree.extract_subtree(nd.parent.child_nodes()[1 if nd.parent.child_nodes()[0] == nd else 0]).traverse_postorder(internal=False)
+        # else:
+        #     sister = nd.parent.child_nodes()[1 if nd.parent.child_nodes()[0] == nd else 0]
+        #     w = self.species_tree.extract_subtree(sister.child_nodes()[0]).traverse_postorder(internal=False)
         z = self.species_tree.traverse_postorder(internal=False)
         get_labels = lambda s: set(node.label for node in s)
         x, y, w, z = get_labels(x), get_labels(y), get_labels(w), get_labels(z)
         z = z - x - y - w
         make_dict = lambda s: {label : True for label in s}
+        # xstr = str(",".join(list(x)))
+        # ystr = str(",".join(list(y)))
+        # wstr = str(",".join(list(w)))
+        # zstr = str(",".join(list(z)))
+        # qstr = label + "\t(" + xstr + ")+(" + ystr + ") | (" + wstr + ")+(" + zstr + ")"
+        # print(qstr)
         cdef dict w_dict = make_dict(w)
         cdef dict x_dict = make_dict(x)
         cdef dict y_dict = make_dict(y)
