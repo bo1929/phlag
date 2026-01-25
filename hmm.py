@@ -28,8 +28,6 @@ from dynamax.hidden_markov_model.models.initial import (
 from dynamax.hidden_markov_model.models.transitions import ParamsStandardHMMTransitions
 from dynamax.parameters import ParameterProperties, ParameterSet, PropertySet
 
-from utils import timeit
-
 PRNGKeyT = Array
 Scalar = Union[float, Float[Array, ""]]
 IntScalar = Union[int, Int[Array, ""]]
@@ -184,7 +182,9 @@ class PhlagHMMTransitions(HMMTransitions):
         """Compute the transition matrices."""
         return params.transition_matrix
 
-    def collect_suff_stats(self, params, posterior: HMMPosterior, inputs=None) -> Union[
+    def collect_suff_stats(
+        self, params, posterior: HMMPosterior, inputs=None
+    ) -> Union[
         Float[Array, "num_states num_states"],
         Float[Array, "num_timesteps_minus_1 num_states num_states"],
     ]:
@@ -440,7 +440,6 @@ class PhlagHMMEmissions(HMMEmissions):
         q /= q.sum()
         return q
 
-    @timeit
     def m_step(
         self,
         params,
@@ -581,18 +580,16 @@ class PhlagHMM(HMM):
         params["initial"], props["initial"] = self.initial_component.initialize(
             key1, method=method, initial_probs=initial_probs
         )
-        (
-            params["transitions"],
-            props["transitions"],
-        ) = self.transition_component.initialize(
-            key2, method=method, transition_matrix=transition_matrix
+        (params["transitions"], props["transitions"]) = (
+            self.transition_component.initialize(
+                key2, method=method, transition_matrix=transition_matrix
+            )
         )
         params["emissions"], props["emissions"] = self.emission_component.initialize(
             key3, method=method, emission_probs=emission_probs
         )
         return ParamsPhlagHMM(**params), ParamsPhlagHMM(**props)
 
-    # @timeit
     def initialize_m_step_state(
         self,
         params: HMMParameterSet,
@@ -641,7 +638,6 @@ class PhlagHMM(HMM):
     #         self.posterior = hmm_two_filter_smoother(*args)
     #     return self.posterior
 
-    # @timeit
     def e_step(
         self,
         params: HMMParameterSet,
@@ -683,11 +679,9 @@ class PhlagHMM(HMM):
         Perform an M-step on the model parameters.
         """
         batch_initial_stats, batch_transition_stats, batch_emission_stats = batch_stats
-        (
-            initial_m_step_state,
-            transitions_m_step_state,
-            emissions_m_step_state,
-        ) = m_step_state
+        (initial_m_step_state, transitions_m_step_state, emissions_m_step_state) = (
+            m_step_state
+        )
 
         initial_params, initial_m_step_state = self.initial_component.m_step(
             params.initial, props.initial, batch_initial_stats, initial_m_step_state

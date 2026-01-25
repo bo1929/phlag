@@ -17,11 +17,6 @@ from sklearn.exceptions import ConvergenceWarning
 from skbio.stats.composition import ilr, multi_replace
 import tensorflow_probability.substrates.jax.distributions as tfd
 
-from dynamax.hidden_markov_model import (
-    BernoulliHMM,
-    CategoricalHMM,
-    GaussianHMM,
-)  # TODO: Remove
 from jaxtyping import Array, Float, Int
 from typing import Union
 
@@ -38,11 +33,11 @@ IntScalar = Union[int, Int[Array, ""]]
 
 NUM_STATES = 2
 INITIAL_PROBS = jnp.array([1.0000, 0.0000], dtype=jnp.float32)
-BRANCH_LENGTH_LAMBDA = 0.5
-MIN_BRANCH_LENGTH = 1e-6
+BLEN_LAMBDA = 0.5
+BLEN_MIN = 1e-6
 
 E_STEP_EPS = 0.0001
-PSI_EPS = 0.01
+PSI_EPS = 0.001
 
 
 # TODO: Disc and args!!!
@@ -53,91 +48,87 @@ class Phlag:
     def __init__(self, args):
         self.args = args
         self.output_file = self.args.output_file
+
         self.read_trees()
         self.compute_qqs()
 
         self.num_classes_min = max(self.args.num_classes_min, 2)
-        self.num_classes_max = min(self.args.num_classes_max, self.gc // 2)
+        self.num_classes_max = min(self.args.num_classes_max, self.n_gt // 2)
         self.ilr_transform = self.args.ilr_transform
 
         self.set_target_clades()
 
         # Initialize branch lengths
-        self.update_branch_lengths(jnp.ones(self.gc))
+        self.update_branch_lengths(jnp.ones(self.n_gt))
 
-        self.extract_observed_freqs()
+        self.extract_observed_qqs()
 
         self.output_str = f"# {' '.join(sys.argv)}"
-        self.output_str += "\n# " + self.species_tree.newick()
+        self.output_str += "\n# " + self.st.newick()
 
         # Initialize the discretization function and select the best number of classes for categorical emissions
         # self.discretizer = discretizer.KMeansDiscretization(
-        #     self.observed_freqs.shape[1],
-        #     self.observed_freqs.shape[2],
+        #     self.observed_qqs.shape[1],
+        #     self.observed_qqs.shape[2],
         #     self.num_classes_max,
         # )
         # self.discretizer.choose_num_classes(
-        #     self.observed_freqs,
+        #     self.observed_qqs,
         #     range_classes=(self.num_classes_min, self.num_classes_max),
         # )
         self.discretizer = discretizer.DTO()
         self.num_classes = self.discretizer.get_num_classes()
-        # self.discretizer.fit_discretization(self.observed_freqs)
-        self.observed_emissions = self.discretizer.discretize_freqs(self.observed_freqs)
+        # self.discretizer.fit_discretization(self.observed_qqs)
+        self.observed_emissions = self.discretizer.discretize_qqs(self.observed_qqs)
 
         # Obtain the initial simulated emissions from the species tree
         self.num_reps = self.args.num_reps
-        simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
+        simulated_qqs = self.msc.simulate_qqs(self.clade_labels, self.num_reps)
         self.simulated_emission_prob = self.discretizer.compute_emission_prob(
-            self.transform_freqs(simulated_freqs)
+            self.transform_qqs(simulated_qqs)
         )
 
         self.initialize_hmm()
 
     def read_trees(self):
-        """Read the species tree and the gene trees"""
-        self.species_tree = utils.label_tree(
-            ts.read_tree_newick(self.args.species_tree)
-        )
-        self.species_tree.suppress_unifurcations()
-        self.label_to_node = self.species_tree.label_to_node(selection="all")
+        self.st = utils.label_tree(ts.read_tree_newick(self.args.species_tree))
+        # self.st.suppress_unifurcations()
+        self.lbl_to_nd = self.st.label_to_node(selection="all")
         with open(self.args.gene_trees) as f:
-            self.gene_trees = [ts.read_tree_newick(line.strip()) for line in f]
-        self.gc = len(self.gene_trees)
-        self.mask = jnp.ones(self.gc, dtype=bool)
+            self.gt_l = [ts.read_tree_newick(line.strip()) for line in f]
+        self.n_gt = len(self.gt_l)
+        self.mask = jnp.ones(self.n_gt, dtype=bool)
 
     def compute_qqs(self):
-        """Compute all quadripartition quartet scores across branches"""
-        self.msc = MSC(self.species_tree, self.gene_trees)
+        self.msc = MSC(self.st, self.gt_l)
         # TODO: Compute only for the target clades
-        if not self.args.read_qqs_freqs:
-            self.label_to_freqs = self.msc.compute_qqs_freqs()
-            if self.args.write_qqs_freqs:
-                self.write_qqs_freqs(self.args.write_qqs_freqs)
+        if not self.args.read_qqs_qqs:
+            self.lbl_to_qqs = self.msc.compute_qqs()
+            if self.args.write_qqs:
+                self.write_qqs(self.args.write_qqs)
         else:
-            self.label_to_freqs = {}
-            self.read_qqs_freqs(self.args.read_qqs_freqs)
+            self.lbl_to_qqs = {}
+            self.read_qqs(self.args.read_qqs_qqs)
 
     def set_target_clades(self):
-        # Select clades across the tree to use for emissions
         self.is_valid = (
-            lambda node: node is not None
-            and not node.is_leaf()
-            and node.get_label() is not None
-            and node.get_label() in self.label_to_freqs.keys()
+            lambda nd: nd is not None
+            and not nd.is_leaf()
+            and nd.get_label() is not None
+            and nd.get_label() in self.lbl_to_qqs.keys()
         )
         if self.args.clade_labels:
             self.clade_labels = []
             for label in self.args.clade_labels:
                 if self.args.expand_branches:
-                    node = self.label_to_node[label]
-                    parent = node.get_parent()
+                    nd = self.lbl_to_nd[label]
+                    parent = nd.get_parent()
                     if self.is_valid(parent):
                         self.clade_labels.append(parent.get_label())
                     for child in parent.child_nodes():
                         if self.is_valid(child):
                             self.clade_labels.append(child.get_label())
-                    for child in node.child_nodes():
+                    for child in nd.child_nodes():
                         if self.is_valid(child):
                             self.clade_labels.append(child.get_label())
                 else:
@@ -147,7 +138,7 @@ class Phlag:
         self.num_clades = len(self.clade_labels)
 
     def select_clades(self, num_clades):
-        partitions = [copy.deepcopy(self.species_tree)]
+        partitions = [copy.deepcopy(self.st)]
         selected_clades = []
         while len(partitions) < num_clades:
             lp, ix_lp = partitions[-1], len(partitions)
@@ -168,21 +159,20 @@ class Phlag:
         selected_clades = [label for label in selected_clades if label is not None]
         return selected_clades
 
-    def extract_observed_freqs(self):
-        # Extract the QQS frequencies (bivariate) and remove the missing data
-        observed_freqs = []
+    def extract_observed_qqs(self):
+        observed_qqs = []
         for clade in self.clade_labels:
-            observed_freqs.append(self.label_to_freqs[clade])
-            self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=1)
-        self.observed_freqs = self.transform_freqs(
-            jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
+            observed_qqs.append(self.lbl_to_qqs[clade])
+            self.mask = self.mask & ~jnp.isnan(observed_qqs[-1]).any(axis=1)
+        self.observed_qqs = self.transform_qqs(
+            jnp.stack(observed_qqs, axis=1)[self.mask, :, :]
         )
 
     def select_best_clade(self, tree):
         nd_l, pscore_l = [], []
         for nd, _ in tree.distances_from_parent(internal=True, leaves=False):
             if (
-                (not (self.label_to_node.get(nd.get_label(), "")))
+                (not (self.lbl_to_nd.get(nd.get_label(), "")))
                 or nd.is_root()
                 or (nd.get_parent() is None)
             ):
@@ -200,19 +190,17 @@ class Phlag:
 
     @ignore_warnings(category=ConvergenceWarning)
     def get_branch_enf(self, nd):
-        freqs = self.label_to_freqs[nd.get_label()]
-        freqs_masked = self.transform_freqs(
-            freqs[~jnp.isnan(freqs[:, :]).any(axis=1), None, :]
-        )
+        qqs = self.lbl_to_qqs[nd.get_label()]
+        qqs_masked = self.transform_qqs(qqs[~jnp.isnan(qqs[:, :]).any(axis=1), None, :])
         discr_curr = discretizer.KMeansDiscretization(
-            freqs_masked.shape[1], freqs_masked.shape[2], self.num_classes_max
+            qqs_masked.shape[1], qqs_masked.shape[2], self.num_classes_max
         )
         # TODO: Perhaps do this?
-        # discr_curr.choose_num_classes(freqs_masked, range_classes=(self.num_classes_min, self.num_classes_max))
-        discr_curr.fit_discretization(freqs_masked)
-        return entropy(discr_curr.compute_emission_prob(freqs_masked)[0, :], base=2)
+        # discr_curr.choose_num_classes(qqs_masked, range_classes=(self.num_classes_min, self.num_classes_max))
+        discr_curr.fit_discretization(qqs_masked)
+        return entropy(discr_curr.compute_emission_prob(qqs_masked)[0, :], base=2)
 
-    def read_qqs_freqs(self, path):
+    def read_qqs(self, path):
         with open(path, "r") as f:
             for i, line in enumerate(f):
                 if i == 0:
@@ -221,69 +209,65 @@ class Phlag:
                 label = values[0]
                 y = int(values[1]) - 1
                 freq_y = jnp.array([float(x) for x in values[2:]])
-                qqs_freq = self.label_to_freqs.get(
-                    label, jnp.zeros((freq_y.shape[0], 3))
-                )
-                self.label_to_freqs[label] = qqs_freq.at[:, y].set(freq_y)
+                qqs_freq = self.lbl_to_qqs.get(label, jnp.zeros((freq_y.shape[0], 3)))
+                self.lbl_to_qqs[label] = qqs_freq.at[:, y].set(freq_y)
 
-    def write_qqs_freqs(self, path):
+    def write_qqs(self, path):
         with open(path, "w") as f:
-            header = "clade\ty\t" + "\t".join(f"g_{i}" for i in range(1, self.gc + 1))
+            header = "clade\ty\t" + "\t".join(f"g_{i}" for i in range(1, self.n_gt + 1))
             f.write(header)
-            for label, freqs in self.label_to_freqs.items():
-                if freqs.shape[0] == 0:
+            for label, qqs in self.lbl_to_qqs.items():
+                if qqs.shape[0] == 0:
                     continue
                 for y in range(3):
                     buffer = StringIO()
                     np.savetxt(
-                        buffer, freqs[:, y], delimiter="", newline="\t", fmt="%.4f"
+                        buffer, qqs[:, y], delimiter="", newline="\t", fmt="%.4f"
                     )
                     f.write(f"\n{label}\t{y + 1}\t{buffer.getvalue()[:-1]}")
 
     def update_branch_lengths(self, ps):
-        for nd in self.species_tree.traverse_postorder():
+        for nd in self.st.traverse_postorder():
             if nd.is_leaf():
                 nd.set_edge_length(0)
                 continue
-            freqs = self.label_to_freqs.get(nd.label, None)
-            if freqs is None:
-                nd.set_edge_length(MIN_BRANCH_LENGTH)
+            qqs = self.lbl_to_qqs.get(nd.label, None)
+            if qqs is None:
+                nd.set_edge_length(BLEN_MIN)
                 continue
-            mfreqs = freqs[self.mask, 0]
-            mmask = ~jnp.isnan(mfreqs)
-            z1 = jnp.sum(mfreqs[mmask] * ps[mmask])
-            n = (
-                jnp.sum(ps[mmask]) + BRANCH_LENGTH_LAMBDA * 2
-            )  # TODO: Make sure this is valid
+            mqqs = qqs[self.mask, 0]
+            mmask = ~jnp.isnan(mqqs)
+            z1 = jnp.sum(mqqs[mmask] * ps[mmask])
+            n = jnp.sum(ps[mmask]) + BLEN_LAMBDA * 2  # TODO: Make sure this is valid
             if z1 >= (n / 3):
                 bl = -jnp.log(3 * (1 - z1 / n) / 2)
             else:
-                bl = MIN_BRANCH_LENGTH
-            final_bl = max(bl, MIN_BRANCH_LENGTH)
+                bl = BLEN_MIN
+            final_bl = max(bl, BLEN_MIN)
             nd.set_edge_length(final_bl)
 
-    def transform_freqs(self, freqs):
+    def transform_qqs(self, qqs):
         if self.ilr_transform:
             x = []
-            for i in range(freqs.shape[1]):
-                x.append(ilr(multi_replace(freqs[:, i, :], delta=1e-7)))
+            for i in range(qqs.shape[1]):
+                x.append(ilr(multi_replace(qqs[:, i, :], delta=1e-7)))
             return jnp.stack(x, axis=1)
         else:
-            return freqs[:, :, :]
+            return qqs[:, :, :]
 
     def initialize_hmm(self):
         # Initialize the HMM, adjusting given hyperparameters based on the sequence length (the number of gene trees)
         self.alpha_0 = (
-            self.gc * (1 - self.args.expected_anamoly_proportion)
+            self.n_gt * (1 - self.args.expected_anamoly_proportion)
             - self.args.expected_num_anomalies
         )
         self.alpha_1 = (
-            self.gc * (self.args.expected_anamoly_proportion)
+            self.n_gt * (self.args.expected_anamoly_proportion)
             - self.args.expected_num_anomalies
         )
         self.beta_0 = self.args.expected_num_anomalies
         self.beta_1 = self.args.expected_num_anomalies
-        self.delta = 1.5 # self.gc * self.args.emission_similarity_penalty
+        self.delta = 1.0  # self.n_gt * self.args.emission_similarity_penalty
         self.gamma = self.args.emission_prior_concentration
         self.nu = self.args.initial_probs_concentration
         self.psi = jnp.ones((NUM_STATES, NUM_STATES))
@@ -299,8 +283,10 @@ class Phlag:
 
         self.prior_concentration = self.gamma * jnp.ones(self.num_classes)
         prior = tfd.Dirichlet(self.prior_concentration)
-        # alt_emission_probs = prior.sample(seed=jr.PRNGKey(0), sample_shape=(self.num_clades))
-        alt_emission_probs = self.simulated_emission_prob
+        alt_emission_probs = prior.sample(
+            seed=jr.PRNGKey(0), sample_shape=(self.num_clades)
+        )
+        # alt_emission_probs = self.simulated_emission_prob
         self.hmm = hmm.PhlagHMM(
             NUM_STATES,
             self.num_clades,
@@ -333,9 +319,9 @@ class Phlag:
             + E_STEP_EPS
         )
         self.update_branch_lengths(ps)
-        simulated_freqs = self.msc.simulate_qqs_freqs(self.clade_labels, self.num_reps)
+        simulated_qqs = self.msc.simulate_qqs(self.clade_labels, self.num_reps)
         simulated_emission_prob = self.discretizer.compute_emission_prob(
-            self.transform_freqs(simulated_freqs)
+            self.transform_qqs(simulated_qqs)
         )
 
         pt_prev = jax.vmap(ix, (0, 1), 0)(
@@ -353,7 +339,7 @@ class Phlag:
     def save_output(self):
         branch_lengths = ", ".join(
             [
-                label + ": " + str(self.label_to_node[label].get_edge_length())
+                label + ": " + str(self.lbl_to_nd[label].get_edge_length())
                 for label in self.clade_labels
             ]
         )
@@ -370,14 +356,17 @@ class Phlag:
             self.params, self.observed_emissions
         )
         ps = np.full(self.mask.shape, np.nan)
-        ps[self.mask] = self.hmm.smoother(self.params, self.observed_emissions).smoothed_probs[
-            :, 1
-        ]
-        self.output_str += "\n# " + self.species_tree.newick()
+        ps[self.mask] = self.hmm.smoother(
+            self.params, self.observed_emissions
+        ).smoothed_probs[:, 1]
+        self.output_str += "\n# " + self.st.newick()
         self.output_str += "\n# " + branch_lengths
         self.output_str += "\n# " + kldiv_str
         self.output_str += "\n" + ",".join(
-            map(lambda x: str(x) if x >= 0 else "nan", most_likely_states.astype(int).tolist())
+            map(
+                lambda x: str(x) if x >= 0 else "nan",
+                most_likely_states.astype(int).tolist(),
+            )
         )
         self.output_str += "\n" + ",".join(
             map(lambda x: str(x), jnp.round(ps, decimals=3).tolist())
@@ -386,12 +375,12 @@ class Phlag:
             f.write(self.output_str)
 
     def run(self):
-        # self.num_classes = discretizer.choose_num_classes(self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max+1))
+        # self.num_classes = discretizer.choose_num_classes(self.observed_qqs, (self.args.num_classes_min, self.args.num_classes_max+1))
         # bcb = discretizer.BCB(self.num_classes)
         # self.num_classes = self.num_classes ** 2
-        # self.observed_emissions = bcb.assign_points(self.observed_freqs)
+        # self.observed_emissions = bcb.assign_points(self.observed_qqs)
 
-        # s = jnp.argsort(self.observed_freqs, axis=1)
+        # s = jnp.argsort(self.observed_qqs, axis=1)
         # self.observed_emissions = self.observed_emissions * 2 + (s[:, 0] > s[:, 1]).astype(int)
         # self.num_classes *= 2
 
@@ -410,7 +399,7 @@ class Phlag:
 
         # self.output_str = f"# {' '.join(sys.argv)}"
         # self.clade_labels = self.args.clade_labels
-        # self.output_str += "\n# " + self.species_tree.newick()
+        # self.output_str += "\n# " + self.st.newick()
         # self.output_str += "\n" + ",".join(
         #     map(lambda x: str(x), most_likely_states.astype(int).tolist())
         # )
@@ -561,12 +550,12 @@ def parse_arguments():
 
     io_group = parser.add_argument_group("I/O options")
     io_group.add_argument(
-        "--write-qqs-freqs",
+        "--write-qqs-qqs",
         type=pathlib.Path,
         help="Write quartet frequencies to the given filepath",
     )
     io_group.add_argument(
-        "--read-qqs-freqs",
+        "--read-qqs-qqs",
         type=pathlib.Path,
         help="Read quartet frequencies from the given filepath",
     )

@@ -33,30 +33,30 @@ class DTO:
             5: jnp.array([2.0 / 3.0, 2.0 / 3.0, 0]),
         }
 
-    def discretize_freqs(self, freqs):
+    def discretize_qqs(self, qqs):
         emissions = []
-        for i in range(freqs.shape[1]):
+        for i in range(qqs.shape[1]):
             emissions.append(
                 jnp.array(
                     list(
                         map(
                             lambda x: self.perm_to_int[tuple(x.tolist())],
-                            jnp.argsort(freqs[:, i, :], axis=-1),
+                            jnp.argsort(qqs[:, i, :], axis=-1),
                         )
                     )
                 )
             )
-            # emissions.append(jnp.argmax(freqs[:, i, :], axis=-1))
+            # emissions.append(jnp.argmax(qqs[:, i, :], axis=-1))
         return jnp.stack(emissions, axis=1)
 
     def get_num_classes(self):
-        return len(self.perm_to_int) # 3
+        return len(self.perm_to_int)  # 3
         # return 3
 
-    def compute_emission_prob(self, freqs: Float[Array, "_ emission_dim input_dim"]):
-        emission_prob = jnp.zeros((freqs.shape[1], self.get_num_classes()))
-        emissions = self.discretize_freqs(freqs)
-        for i in range(freqs.shape[1]):
+    def compute_emission_prob(self, qqs: Float[Array, "_ emission_dim input_dim"]):
+        emission_prob = jnp.zeros((qqs.shape[1], self.get_num_classes()))
+        emissions = self.discretize_qqs(qqs)
+        for i in range(qqs.shape[1]):
             k, v = jnp.unique(emissions[:, i], return_counts=True)
             c = zip(k, v)
             for k, v in c:
@@ -138,9 +138,9 @@ class BCB:
                     )
         return bins, jnp.array(bin_centers)
 
-    def discretize_freqs(self, freqs):
+    def discretize_qqs(self, qqs):
         d = lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2, axis=-1))
-        return jnp.argmin(jax.vmap(d, (None, 0), 1)(freqs, self.bin_centers), axis=1)
+        return jnp.argmin(jax.vmap(d, (None, 0), 1)(qqs, self.bin_centers), axis=1)
 
 
 def choose_num_classes(data, range_classes=(2, 81)):
@@ -165,8 +165,7 @@ def choose_num_classes(data, range_classes=(2, 81)):
         if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
             break
         print(
-            f"For {j} classes, the avg. silhouette score: {sill_avg}",
-            file=sys.stderr,
+            f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr
         )
         j += int(math.sqrt(j))
     print(
@@ -194,7 +193,7 @@ class BinDiscretization(Discretization):
         self.num_classes = (num_bins) ** input_dim
         self.bins = jnp.empty((self.emission_dim, self.input_dim, self.num_bins + 1))
 
-    def discretize_freqs(self, obs):
+    def discretize_qqs(self, obs):
         obsd = jnp.zeros((obs.shape[0], self.emission_dim))
         for i in range(self.emission_dim):
             for j in range(self.input_dim):
@@ -317,7 +316,7 @@ class ClusterDiscretization(Discretization):
             pw_dist.append(pwd)
         return pw_dist
 
-    def discretize_freqs(self, obs):
+    def discretize_qqs(self, obs):
         assert len(self.cl) == self.emission_dim
         obsd = jnp.zeros((obs.shape[0], self.emission_dim))
         for i in range(self.emission_dim):
@@ -338,15 +337,13 @@ class KMeansDiscretization(ClusterDiscretization):
         ]
 
     def fit_discretization(
-        self, observed_freqs: Float[Array, "_ emission_dim input_dim"]
+        self, observed_qqs: Float[Array, "_ emission_dim input_dim"]
     ):
-        assert observed_freqs.shape[1] == self.emission_dim
-        assert observed_freqs.shape[2] == self.input_dim
+        assert observed_qqs.shape[1] == self.emission_dim
+        assert observed_qqs.shape[2] == self.input_dim
         for i in range(self.emission_dim):
-            self.f[i].fit(observed_freqs[:, i, :])
-            c = jnp.unique(
-                self.f[i].predict(observed_freqs[:, i, :]), return_counts=True
-            )
+            self.f[i].fit(observed_qqs[:, i, :])
+            c = jnp.unique(self.f[i].predict(observed_qqs[:, i, :]), return_counts=True)
             self.cl.append(c)
             curr_num_classes = c[0].shape[0]
             # self.num_classes = (
@@ -354,12 +351,12 @@ class KMeansDiscretization(ClusterDiscretization):
             # )
 
     def compute_emission_prob(
-        self, simulated_freqs: Float[Array, "_ emission_dim input_dim"]
+        self, simulated_qqs: Float[Array, "_ emission_dim input_dim"]
     ):
-        assert simulated_freqs.shape[1] == self.emission_dim
-        assert simulated_freqs.shape[2] == self.input_dim
+        assert simulated_qqs.shape[1] == self.emission_dim
+        assert simulated_qqs.shape[2] == self.input_dim
         null_emission_prob = jnp.zeros((self.emission_dim, self.num_classes))
-        simulated_emissions = self.discretize_freqs(simulated_freqs)
+        simulated_emissions = self.discretize_qqs(simulated_qqs)
         for i in range(self.emission_dim):
             k, v = jnp.unique(simulated_emissions[:, i], return_counts=True)
             c = zip(k, v)
