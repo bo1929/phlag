@@ -40,7 +40,7 @@ python phlag.py \
   --species-tree test/neoaves.nwk \
   --gene-trees  test/emission.gtrees \
   -c N159 \
-  --num-ters 10 \
+  --num-iters 10 \
   --read-qqs-freqs test/qqs.tsv \
   --output-file results-neoaves-N159.txt
 ```
