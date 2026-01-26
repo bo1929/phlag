@@ -267,7 +267,7 @@ class Phlag:
         )
         self.beta_0 = self.args.expected_num_anomalies
         self.beta_1 = self.args.expected_num_anomalies
-        self.delta = 1.0  # self.n_gt * self.args.emission_similarity_penalty
+        self.delta = self.args.emission_similarity_penalty
         self.gamma = self.args.emission_prior_concentration
         self.nu = self.args.initial_probs_concentration
         self.psi = jnp.ones((NUM_STATES, NUM_STATES))
@@ -513,7 +513,7 @@ def parse_arguments():
     hmm_group.add_argument(
         "--emission-similarity-penalty",
         type=float,
-        default=0.01,
+        default=1,
         help="Hyperparameter to control deviation of anomalies from MSC (default: 0.01)",
     )
     hmm_group.add_argument(
