@@ -32,7 +32,7 @@ BRANCH_LENGTH_LAMBDA = 0.5
 MIN_BRANCH_LENGTH = 1e-6
 
 
-class KMeansDiscretization():
+class KMeansDiscretization:
     def __init__(self, emission_dim: int, input_dim: int, num_classes: int):
         self.emission_dim = emission_dim
         self.input_dim = input_dim
@@ -84,6 +84,7 @@ class KMeansDiscretization():
             c = jnp.unique(self.f[i].predict(freqs[:, i, :]), return_counts=True)
             self.cl.append(c)
 
+
 class BCB:
     def __init__(self, n_bins):
         self.n_bins = n_bins
@@ -91,7 +92,6 @@ class BCB:
 
     def get_num_classes(self):
         return self.n_bins**2
-
 
     def create_bins(self):
         bins = []
@@ -170,7 +170,6 @@ class BCB:
                 break
             j += int(math.sqrt(j))  # Regime for the optimal number of bins search
         return best_num_bins
-
 
 
 class ADHMM:
@@ -405,6 +404,7 @@ class GQSHMM(QQSHMM):
         obs = self.label_to_freqs[nd.get_label()]
         return -(jnp.mean(obs[:, 0]) - self.lquartile_support)
 
+
 # Clustering Quartet Supports HMM
 class CQSHMM(QQSHMM):
     def __init__(self, args):
@@ -416,11 +416,19 @@ class CQSHMM(QQSHMM):
             mask = ~jnp.isnan(self.label_to_freqs[branch]).any(axis=-1)
             self.mask = self.mask & mask
         for i, branch in enumerate(self.branches):
-            observed_freqs.append(ilr(multi_replace(self.label_to_freqs[branch][self.mask, :], delta=1e-5)))
+            observed_freqs.append(
+                ilr(
+                    multi_replace(self.label_to_freqs[branch][self.mask, :], delta=1e-5)
+                )
+            )
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)
 
-        self.num_classes = KMeansDiscretization.choose_num_classes(self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max))
-        discretizer = KMeansDiscretization(self.observed_freqs.shape[1], self.observed_freqs.shape[2], self.num_classes)
+        self.num_classes = KMeansDiscretization.choose_num_classes(
+            self.observed_freqs, (self.args.num_classes_min, self.args.num_classes_max)
+        )
+        discretizer = KMeansDiscretization(
+            self.observed_freqs.shape[1], self.observed_freqs.shape[2], self.num_classes
+        )
         discretizer.fit_discretization(self.observed_freqs)
         self.obs = discretizer.discretize_freqs(self.observed_freqs)
 
@@ -441,12 +449,15 @@ class CQSHMM(QQSHMM):
             obs = ilr(multi_replace(obs, delta=1e-5))[:, None, :]
         else:
             obs = obs[:, None, :]
-        num_classes = KMeansDiscretization.choose_num_classes(obs, (self.args.num_classes_min, self.args.num_classes_max))
+        num_classes = KMeansDiscretization.choose_num_classes(
+            obs, (self.args.num_classes_min, self.args.num_classes_max)
+        )
         discretizer = KMeansDiscretization(1, obs.shape[1], num_classes)
         discretizer.fit_discretization(obs)
         t, c = jnp.unique(discretizer.discretize_freqs(obs), return_counts=True)
         s = jnp.mean(obs[:, 0])
         return entropy(c / c.sum(), base=2) + ((s >= self.median_support) * DELTA)
+
 
 # Barycentric Coordinate Bins HMM
 class BCBHMM(QQSHMM):
@@ -459,7 +470,9 @@ class BCBHMM(QQSHMM):
             observed_freqs.append(self.label_to_freqs[branch])
             self.mask = self.mask & ~jnp.isnan(observed_freqs[-1]).any(axis=-1)
         self.observed_freqs = jnp.stack(observed_freqs, axis=1)[self.mask, :, :]
-        self.n_bins = BCB.choose_num_bins(self.observed_freqs, (self.args.num_bins_min, self.args.num_bins_max))
+        self.n_bins = BCB.choose_num_bins(
+            self.observed_freqs, (self.args.num_bins_min, self.args.num_bins_max)
+        )
         self.bcb = BCB(self.n_bins)
 
         obs = []
@@ -485,7 +498,9 @@ class BCBHMM(QQSHMM):
         obs = self.label_to_freqs[nd.get_label()]
         # Total variance-to-mean ratio, i.e., index of dipersion
         # s = jnp.sum(jnp.var(obs, axis=0)/jnp.mean(obs, axis=0))
-        n_bins = BCB.choose_num_bins(obs[:, None, :], (self.args.num_bins_min, self.args.num_bins_max))
+        n_bins = BCB.choose_num_bins(
+            obs[:, None, :], (self.args.num_bins_min, self.args.num_bins_max)
+        )
         bcb = BCB(n_bins)
         t, c = jnp.unique(bcb.assign_points(obs), return_counts=True)
         s = jnp.mean(obs[:, 0])
@@ -703,7 +718,9 @@ def parse_arguments():
         "dto-hmm", help="Dominant Topology Ordering HMM"
     )
     gqshmm_parser = subparsers.add_parser("gqs-hmm", help="Gaussian Quartet Scores HMM")
-    cqshmm_parser = subparsers.add_parser("cqs-hmm", help="K-means discretization Quartet Scores HMM")
+    cqshmm_parser = subparsers.add_parser(
+        "cqs-hmm", help="K-means discretization Quartet Scores HMM"
+    )
     bcbhmm_parser = subparsers.add_parser(
         "bcb-hmm", help="Barycentric Coordinate Bins HMM"
     )
