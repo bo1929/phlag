@@ -8,6 +8,11 @@ import math
 
 from jaxtyping import Array, Float
 from sklearn.metrics import silhouette_samples, silhouette_score
+from scipy.stats import entropy
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
+
+# @ignore_warnings(category=ConvergenceWarning)
 
 
 PEPS = 1e-5
@@ -64,9 +69,9 @@ class DTO:
             emission_prob = emission_prob.at[i, :].set(
                 emission_prob[i, :] / jnp.sum(emission_prob[i, :])
             )
-            emission_prob = emission_prob.at[i, :].set(
+            emission_prob = emission_prob.at[i, :].set(emission_prob[i, :] + PEPS) / jnp.sum(
                 emission_prob[i, :] + PEPS
-            ) / jnp.sum(emission_prob[i, :] + PEPS)
+            )
         return emission_prob
 
     def get_cost_matrices(self, emission_dim=1):
@@ -94,11 +99,7 @@ class BCB:
         bin_centers = []
         for i in range(self.n_bins):
             for j in range(self.n_bins - i):
-                x1, y1, z1 = (
-                    i / self.n_bins,
-                    j / self.n_bins,
-                    (self.n_bins - i - j) / self.n_bins,
-                )
+                x1, y1, z1 = (i / self.n_bins, j / self.n_bins, (self.n_bins - i - j) / self.n_bins)
                 x2, y2, z2 = (
                     (i + 1) / self.n_bins,
                     j / self.n_bins,
@@ -111,9 +112,7 @@ class BCB:
                 )
 
                 bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
-                bin_centers.append(
-                    ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
-                )
+                bin_centers.append(((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3))
 
                 if i + j < self.n_bins - 1:
                     x1, y1, z1 = (
@@ -133,9 +132,7 @@ class BCB:
                     )
 
                     bins.append([(x1, y1, z1), (x2, y2, z2), (x3, y3, z3)])
-                    bin_centers.append(
-                        ((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3)
-                    )
+                    bin_centers.append(((x1 + x2 + x3) / 3, (y1 + y2 + y3) / 3, (z1 + z2 + z3) / 3))
         return bins, jnp.array(bin_centers)
 
     def discretize_qqs(self, qqs):
@@ -164,9 +161,7 @@ def choose_num_classes(data, range_classes=(2, 81)):
             best_num_classes = j
         if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
             break
-        print(
-            f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr
-        )
+        print(f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr)
         j += int(math.sqrt(j))
     print(
         f"Best: {best_num_classes} classes, the avg. silhouette score: {best_sill_avg}",
@@ -224,9 +219,7 @@ class EqualBinDiscretization(BinDiscretization):
 
 
 class FixedBinDiscretization(BinDiscretization):
-    def __init__(
-        self, emission_dim: int, input_dim: int, bins: Float[Array, "input_dim _"]
-    ):
+    def __init__(self, emission_dim: int, input_dim: int, bins: Float[Array, "input_dim _"]):
         self.emission_dim = emission_dim
         self.input_dim = input_dim
         self.num_bins = bins.shape[-1] - 1
@@ -281,10 +274,7 @@ class ClusterDiscretization(Discretization):
                 best_num_classes = j
             if ((sill_avg) > 0.99) or (sill_avg < 1e-5):
                 break
-            print(
-                f"For {j} classes, the avg. silhouette score: {sill_avg}",
-                file=sys.stderr,
-            )
+            print(f"For {j} classes, the avg. silhouette score: {sill_avg}", file=sys.stderr)
             j += int(math.sqrt(j))
         print(
             f"Best: {best_num_classes} classes, the avg. silhouette score: {best_sill_avg}",
@@ -332,13 +322,9 @@ class KMeansDiscretization(ClusterDiscretization):
         self.input_dim = input_dim
         self.num_classes = num_classes
         self.cl = []
-        self.f = [
-            cluster.KMeans(n_clusters=self.num_classes) for _ in range(emission_dim)
-        ]
+        self.f = [cluster.KMeans(n_clusters=self.num_classes) for _ in range(emission_dim)]
 
-    def fit_discretization(
-        self, observed_qqs: Float[Array, "_ emission_dim input_dim"]
-    ):
+    def fit_discretization(self, observed_qqs: Float[Array, "_ emission_dim input_dim"]):
         assert observed_qqs.shape[1] == self.emission_dim
         assert observed_qqs.shape[2] == self.input_dim
         for i in range(self.emission_dim):
@@ -350,9 +336,7 @@ class KMeansDiscretization(ClusterDiscretization):
             #     curr_num_classes if i == 0 else max(self.num_classes, curr_num_classes)
             # )
 
-    def compute_emission_prob(
-        self, simulated_qqs: Float[Array, "_ emission_dim input_dim"]
-    ):
+    def compute_emission_prob(self, simulated_qqs: Float[Array, "_ emission_dim input_dim"]):
         assert simulated_qqs.shape[1] == self.emission_dim
         assert simulated_qqs.shape[2] == self.input_dim
         null_emission_prob = jnp.zeros((self.emission_dim, self.num_classes))
