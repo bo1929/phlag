@@ -55,6 +55,8 @@ For other options, run `python phlag.py --help`.
 Conversely, an incorrect/unreliable species tree may result in too many flagged gene trees.
 In such cases, you can attempt to adjust the hyperparameters to detect anomalies at the resolution you desire.
 
+A high-level and generic suggestion is running Phlag with varying hyperparameters (in a sensible range tested in the paper), and focusing on regions that are consistently detected. You may want to increase `--expected-num-anomalies` if you are looking for more granular results or if large contigous chunks are flagged. Similarly, `--expected-anamoly-proportion` can be varied between 0 and 0.5 to change to prior on the stationary distribution. 
+
 ### Output
 The output is rather simple to interpret:
 - **Header (Lines 1-5)**: Auxiliary information prefixed with `#`:
