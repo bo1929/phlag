@@ -119,6 +119,10 @@ class MSC:
         self.st = st
         self.gt_l = gt_l
         self.n_gt = len(gt_l)
+        # Not needed.
+        # self.st.deroot()
+        # self.st.encode_bipartitions()
+        # self.lbl_to_nd = utils.map_label_to_node(st)
 
     def compute_qqs(self):
         edge_to_qqs = defaultdict(partial(jnp.zeros, (self.n_gt, 3)))
