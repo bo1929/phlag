@@ -128,7 +128,7 @@ cdef class MSC:
 
     @cython.boundscheck(False)
     @cython.wraparound(False)
-    def simulate_qqs_freqs(self, clade_labels, num_reps):
+    def simulate_qqs_freqs(self, branch_l, num_reps):
         cdef object tns = dendropy.TaxonNamespace()
         cdef object dendropy_tree = dendropy.Tree.get(
             data=self.species_tree.newick(), schema="newick", taxon_namespace=tns
@@ -136,7 +136,7 @@ cdef class MSC:
         cdef object gene_to_species_map = dendropy.TaxonNamespaceMapping.create_contained_taxon_mapping(
             containing_taxon_namespace=tns, num_contained=1
         )
-        cdef object simulated_freqs = jnp.zeros((num_reps, len(clade_labels), 3))
+        cdef object simulated_freqs = jnp.zeros((num_reps, len(branch_l), 3))
         cdef object simulated_tree
         cdef dict x, y, w, z
         cdef int i, j
@@ -154,8 +154,8 @@ cdef class MSC:
                 parts = nd.label.split("_")
                 nd.label = "_".join(parts[:len(parts)-1])
             j = 0
-            for clade in clade_labels:
-                x, y, w, z = self.qqs.get_qp(clade)
+            for branch in branch_l:
+                x, y, w, z = self.qqs.get_qp(branch)
                 assert min(len(x), len(y), len(w), len(z)) >= 1
                 f1, f2, f3 = self.qqs.freq(x, y, w, z, simulated_tree)
                 simulated_freqs = simulated_freqs.at[i, j, :].set((f1, f2, f3))
