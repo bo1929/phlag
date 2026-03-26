@@ -320,7 +320,7 @@ class Phlag:
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Phlag: Detection of genomic regions with unexplained phylogenetic heterogeneity"
+        description="Phlag: Detecting genomic regions with unexplained phylogenetic heterogeneity"
     )
 
     parser.add_argument(
@@ -380,7 +380,6 @@ def parse_arguments():
                     Unrooted: edge giving the most balanced bipartition.""",
     )
     parser.add_argument(
-        "-ee",
         "--expand-edges",
         action="store_true",
         help="Incorporate the signal from neighboring/incident edges.",
