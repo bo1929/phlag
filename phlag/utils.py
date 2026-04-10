@@ -169,7 +169,7 @@ def limited_float(min_val, max_val):
 def limited_int(min_val, max_val):
     def check_range(value):
         fvalue = int(value)
-        if not (min_val <= fvalue <= max_val) or not (isinstance(value, int)):
+        if not (min_val <= fvalue <= max_val):
             raise ValueError(
                 f"Argument must be an integer between {min_val} and {max_val} (inclusive)."
             )

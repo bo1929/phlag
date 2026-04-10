@@ -13,11 +13,10 @@ from io import StringIO
 from tqdm import tqdm
 from skbio.stats.composition import ilr, multi_replace
 
-import hmm
-import utils
-import discretizer
-
-from qqs import MSC
+from . import hmm
+from . import utils
+from . import fxy
+from .qqs import MSC
 
 BLEN_LAMBDA = 0.5
 BLEN_MIN = 1e-6
@@ -46,7 +45,6 @@ class Phlag:
 
     def read_trees(self):
         self.taxa = utils.get_canonical_taxon_namespace(self.args.species_tree)
-        taxa_list = list(self.taxa)
         self.st = dendropy.Tree.get(
             path=self.args.species_tree,
             schema="newick",
@@ -69,7 +67,19 @@ class Phlag:
         self.lbl_to_nd = utils.map_label_to_node(self.st)
 
     def validate_parameters(self):
-        pass
+        if not (0 < self.args.rho < 1):
+            raise ValueError(f"--rho must be in (0, 1), got {self.args.rho}")
+        if self.args.beta <= 0:
+            raise ValueError(f"--beta must be positive, got {self.args.beta}")
+        if not (0 < self.args.eta < 1):
+            raise ValueError(f"--eta must be in (0, 1), got {self.args.eta}")
+        if self.args.n_iters < 1:
+            raise ValueError(f"--n-iters must be >= 1, got {self.args.n_iters}")
+        if self.n_gt < 2:
+            raise ValueError(f"Need at least 2 gene trees, got {self.n_gt}")
+        for lbl in self.args.focal_edges:
+            if lbl not in self.lbl_to_nd:
+                raise ValueError(f"Focal edge label '{lbl}' not found in species tree")
 
     def determine_focal_edges(self):
         if self.args.focal_edges:
@@ -96,28 +106,15 @@ class Phlag:
             return qqs[:, :, :]
 
     def configure_emissions(self):
-        # self.num_classes_min = max(self.args.num_classes_min, 2)
-        # self.num_classes_max = min(self.args.num_classes_max, self.n_gt // 2)
         self.ilr_transform = self.args.ilr_transform
 
     def compute_emissions(self):
-        # Initialize the discretization function and select the best number of classes for categorical emissions
-        # self.discretizer = discretizer.KMeansDiscretization(
-        #     self.Y.shape[1],
-        #     self.Y.shape[2],
-        #     self.num_classes_max,
-        # )
-        # self.discretizer.choose_num_classes(
-        #     self.Y,
-        #     range_classes=(self.num_classes_min, self.num_classes_max),
-        # )
         Y = []
-        # self.discretizer.fit_discretization(Y)
         for edge in self.focal_edges:
             Y.append(self.edge_to_qqs[edge])
             self.mask = self.mask & ~jnp.isnan(Y[-1]).any(axis=1)
         Y = self.transform_qqs(jnp.stack(Y, axis=1)[self.mask, :, :])
-        self.discretizer = discretizer.DTO()
+        self.discretizer = fxy.DTO()
         self.num_classes = self.discretizer.get_num_classes()
         self.Y = self.discretizer.discretize_qqs(Y)
 
@@ -250,7 +247,7 @@ class Phlag:
         self.psi = self.psi.at[0, 1].set(self.beta_0)
         self.psi = self.psi.at[-1, -1].set(self.alpha_1)
         self.psi = self.psi.at[-1, 0].set(self.beta_1)
-        if np.all(self.psi < 0).any():
+        if np.any(self.psi < 0):
             raise ValueError(
                 "Invalid transition matrix; either beta<0 or beta/rho > # of gene trees"
             )
@@ -266,9 +263,9 @@ class Phlag:
             self.num_edges,
             self.num_classes,
             emission_lambda=self.emission_lambda,
-            emission_concetration=self.gamma,
+            emission_concentration=self.gamma,
             emission_parameterization=self.emission_parameterization,
-            initial_probs_concetration=self.nu,
+            initial_probs_concentration=self.nu,
             transition_concentration=self.psi,
             occupancy_bias=self.occupancy_bias,
         )
@@ -287,7 +284,7 @@ class Phlag:
     def propose_simulated_emission_prob(self):
         ix = lambda x, y: x[y]
         ps = self.hmm.smoother(self.params, self.Y).smoothed_probs[:, 0]
-        ps += +E_STEP_EPS
+        ps += E_STEP_EPS
         self.update_edge_lengths(ps)
         simulated_emission_prob = self.simulate_emission_prob()
         pt_prev = jax.vmap(ix, (0, 1), 0)(self.simulated_emission_prob, self.Y)
@@ -443,12 +440,6 @@ def parse_arguments():
     )
 
     discr_group = parser.add_argument_group("Discretization and emission parameters")
-    discr_group.add_argument(
-        "--num-classes-min", type=int, default=8, help="Minimum number of classes (default: 8)"
-    )
-    discr_group.add_argument(
-        "--num-classes-max", type=int, default=64, help="Maximum number of classes (default: 64)"
-    )
     discr_group.add_argument(
         "--ilr-transform",
         action="store_true",

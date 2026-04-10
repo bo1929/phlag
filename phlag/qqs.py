@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from tqdm import tqdm
 
-import utils
+from . import utils
 
 
 class QQS:

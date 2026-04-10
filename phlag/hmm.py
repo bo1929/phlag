@@ -5,13 +5,15 @@ import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 from enum import Enum
+from functools import partial
+from typing import Any, Callable, NamedTuple, Optional, Tuple, Union, cast
 
+from jax import jit, lax
 from jax.scipy.special import kl_div
 from jax.scipy.optimize import minimize
 from jax.nn import softmax, one_hot
 from jax.lax import while_loop
 from jaxtyping import Array, Float, Int, PyTree
-from typing import Any, NamedTuple, Optional, Tuple, Union, cast
 from dynamax.utils.utils import pytree_sum
 from dynamax.hidden_markov_model.inference import *
 from dynamax.hidden_markov_model.models.abstractions import (
@@ -538,8 +540,8 @@ class PhlagHMM(HMM):
         num_classes: int = 2,
         emission_lambda: Scalar = 1,
         emission_parameterization: Tuple[EmissionParam, ...] = None,
-        emission_concetration: Union[Scalar, Float[Array, "num_classes"]] = 1.1,
-        initial_probs_concetration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
+        emission_concentration: Union[Scalar, Float[Array, "num_classes"]] = 1.1,
+        initial_probs_concentration: Union[Scalar, Float[Array, "num_states"]] = 1.1,
         transition_concentration: Union[Scalar, Float[Array, "num_states num_states"]] = 1.1,
         occupancy_bias: Union[Scalar, Float[Array, "num_states"]] = 0.0,
         **kwargs,
@@ -553,8 +555,8 @@ class PhlagHMM(HMM):
         else:
             self.emission_parameterization = (EmissionParam.FREE,) * self.num_states
 
-        self.emission_concetration = emission_concetration
-        self.initial_probs_concetration = initial_probs_concetration
+        self.emission_concentration = emission_concentration
+        self.initial_probs_concentration = initial_probs_concentration
         self.transition_concentration = transition_concentration
 
         self.initial_probs_m_step_state = None
@@ -563,7 +565,7 @@ class PhlagHMM(HMM):
         self.occupancy_bias = occupancy_bias
 
         self.initial_component = StandardHMMInitialState(
-            num_states=self.num_states, initial_probs_concentration=self.initial_probs_concetration
+            num_states=self.num_states, initial_probs_concentration=self.initial_probs_concentration
         )
         self.transition_component = PhlagHMMTransitions(
             num_states=self.num_states, concentration=self.transition_concentration
@@ -573,7 +575,7 @@ class PhlagHMM(HMM):
             self.emission_dim,
             self.num_classes,
             penalty_lambda=self.emission_lambda,
-            concentration=self.emission_concetration,
+            concentration=self.emission_concentration,
             parameterization=self.emission_parameterization,
         )
         super().__init__(
