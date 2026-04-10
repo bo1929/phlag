@@ -9,7 +9,7 @@ The expected output is a set of "flagged" subsequences corresponding to model vi
 
 ## Installation
 
-Phlag requires Python == 3.9.
+Phlag requires Python 3.9.
 ```shell
 micromamba create -n phlag python=3.9 -y
 micromamba activate phlag
