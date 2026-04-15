@@ -425,7 +425,7 @@ def parse_arguments():
     hmm_group.add_argument(
         "--emission-initialization",
         type=str.lower,
-        default="inverse",
+        default="random",
         choices=["random", "inverse", "simulation"],
         help="""The default state is initialized based on MSC-based simulations.
                     The alternative state is initialized from inverse, random, or simulation.""",
