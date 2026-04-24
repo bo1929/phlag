@@ -71,8 +71,8 @@ For the full list of options, run `phlag --help`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--rho` | 0.9 | Controls sensitivity; reduce to flag more regions |
-| `--beta` | 5 | Controls contiguity of flagged intervals; a good heuristic is setting `--beta` to 0.0025 $\times$ the number of input gene trees |
+| `--rho` | 0.9 | Controls sensitivity (reduce to flag more regions); the interpretation is the expected portion of gene trees generated under MSC |
+| `--beta` | 5 | Controls contiguity of flagged intervals (reduce to merge nearby flags); a good heuristic is setting `--beta` to 0.0025 $\times$ the number of input gene trees |
 | `--emission-lambda` | 1.0 | Controls expected deviation of anomalies from MSC |
 | `--eta` | 0.5 | Occupancy bias penalty on the marginal log-likelihood |
 
