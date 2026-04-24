@@ -72,7 +72,7 @@ For the full list of options, run `phlag --help`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--rho` | 0.9 | Controls sensitivity; reduce to flag more regions |
-| `--beta` | 5 | Controls contiguity of flagged intervals; reduce to merge nearby flags |
+| `--beta` | 5 | Controls contiguity of flagged intervals; a good heuristic is setting `--beta` to 0.0025 $\times$ the number of input gene trees |
 | `--emission-lambda` | 1.0 | Controls expected deviation of anomalies from MSC |
 | `--eta` | 0.5 | Occupancy bias penalty on the marginal log-likelihood |
 
@@ -89,6 +89,6 @@ The output file contains:
     * The initial species tree with branch lengths in CU, estimated using the entire gene tree sequence.
     * The labels and final branch lengths of the focal edges.
     * The final species tree with branch lengths re-estimated after excluding the flagged gene trees.
-    * The final focal edge lengths, and distances between the emission distributions of the two HMM states for each focal edge.
+    * The final focal edge lengths and distances between the emission distributions of the two HMM states for each focal edge.
 - **State labels**: A comma-separated sequence where `1` = flagged (anomalous) and `0` = MSC-compliant. Gene trees excluded due to missing data are labeled `nan`.
 - **Posterior probabilities**: The smoothed posterior probability of being in the anomalous state for each gene tree.
