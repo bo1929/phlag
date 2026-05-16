@@ -24,6 +24,7 @@ E_STEP_EPS = 0.0001
 PSI_EPS = 0.001
 NUM_STATES = 2
 MAX_INCIDENT_LENGTH = 2.0
+BETA_PRIME = 0.0025
 INITIAL_PROBS = jnp.array([1.0000, 0.0000], dtype=jnp.float32)
 
 
@@ -67,10 +68,16 @@ class Phlag:
         self.lbl_to_nd = utils.map_label_to_node(self.st)
 
     def validate_parameters(self):
+        if self.args.beta is None:
+            self.args.beta = self.args.beta_prime * self.n_gt
         if not (0 < self.args.rho < 1):
             raise ValueError(f"--rho must be in (0, 1), got {self.args.rho}")
         if self.args.beta <= 0:
             raise ValueError(f"--beta must be positive, got {self.args.beta}")
+        if not (0 < self.args.beta_prime < 0.5):
+            raise ValueError(
+                f"--beta-prime must be in (0, 0.5), got {self.args.beta_prime}"
+            )
         if not (0 < self.args.eta < 1):
             raise ValueError(f"--eta must be in (0, 1), got {self.args.eta}")
         if self.args.n_iters < 1:
@@ -391,9 +398,20 @@ def parse_arguments():
     )
     hmm_group.add_argument(
         "--beta",
-        type=int,
-        default=5,
-        help="Hyperparameter to control contiguity of intervals, reduce to increase contiguity (default 5)",
+        type=float,
+        default=None,
+        help=(
+            "Hyperparameter to control contiguity of intervals, reduce to increase contiguity (default: 5; overrides --beta-prime when set)"
+        ),
+    )
+    hmm_group.add_argument(
+        "--beta-prime",
+        type=float,
+        default=BETA_PRIME,
+        dest="beta_prime",
+        help=(
+            "Scale factor beta; effective beta is this times the number of gene trees when (default: {BETA_PRIME}; must be in (0, 0.5))"
+        ),
     )
     hmm_group.add_argument(
         "--emission-lambda",

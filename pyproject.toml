@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phlag"
-version = "0.0.2"
+version = "0.2.0"
 description = "Detecting and flagging phylogenetic anomalies across the genome"
 readme = "README.md"
 license = "GPL-3.0-only"

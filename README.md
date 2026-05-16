@@ -69,12 +69,12 @@ For the full list of options, run `phlag --help`.
 
 ### Key hyperparameters
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--rho` | 0.9 | Controls sensitivity (reduce to flag more regions); the interpretation is the expected portion of gene trees generated under MSC |
-| `--beta` | 5 | Controls contiguity of flagged intervals (reduce to merge nearby flags); a good heuristic is setting `--beta` to 0.0025 $\times$ the number of input gene trees |
-| `--emission-lambda` | 1.0 | Controls expected deviation of anomalies from MSC |
-| `--eta` | 0.5 | Occupancy bias penalty on the marginal log-likelihood |
+- **`--rho`** (default: `0.9`): Controls sensitivity (reduce to flag more regions); the interpretation is the expected portion of gene trees generated under MSC.
+- **`--beta-prime`** and **`--beta`**: Control how contiguous flagged intervals are expected to be (reduce either to merge nearby flags into longer runs). Phlag uses `--beta-prime` by default and sets the effective contiguity prior to `beta_prime` x number of gene trees, so the prior scales with input size. With the default `beta_prime = 0.0025`, 2000 gene trees yield an effective beta of 5 (about five contiguous anomalous regions expected genome-wide). `--beta-prime` must lie in `(0, 0.5)`. Pass **`--beta`** to override scaling with a fixed value (e.g., `--beta 5` for the legacy behavior regardless of how many gene trees you supply).
+- **`--emission-lambda`** (default: `1.0`): Controls expected deviation of anomalies from MSC.
+- **`--eta`** (default: `0.5`): Occupancy bias penalty on the marginal log-likelihood.
+
+`--rho`, `--beta-prime`, `--beta`, and `--emission-lambda` parameterize priors and they do not imply strong expecatations.
 
 **Note**: If your data lacks strong deviations from the MSC, you may see few or no flagged trees.
 Conversely, an incorrect or unreliable species tree may result in too many flagged gene trees.
