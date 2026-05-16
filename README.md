@@ -86,17 +86,17 @@ regions. Interpreted as the expected fraction of gene trees generated under the
 MSC.
 
 - **`--beta-prime`** and **`--beta`**: Control how contiguous flagged intervals
-are expected to be. Lower values encourage merging nearby flags into longer
+are expected to be. Lower values encourage merging nearby regions into longer
 runs.
 
-  By default, Phlag uses **`--beta-prime`** and sets the effective contiguity
-  prior to `beta_prime` times the number of gene trees, so the prior scales with
-  input size. The default `beta_prime = 0.0025` gives an effective beta of 5 for
-  2000 gene trees (roughly five contiguous anomalous regions expected
+  By default, Phlag uses **`--beta-prime`** and parameterizes the prior distribution
+  for effective contiguity using `beta_prime` times the number of gene trees, so the
+  prior scales with input size. The default `beta_prime = 0.0025` gives an effective
+  beta of 5 for 2000 gene trees (roughly five contiguous anomalous regions expected
   genome-wide). Valid values for `--beta-prime` are in `(0, 0.5)`.
 
   Pass **`--beta`** to use a fixed contiguity prior instead (e.g., `--beta 5`
-  for the legacy behavior, independent of the number of gene trees).
+  for the alpha-version behavior, independent of the number of gene trees).
 
 - **`--emission-lambda`** (default: `1.0`): Controls the expected deviation of
 anomalies from the MSC.
@@ -104,19 +104,19 @@ anomalies from the MSC.
 - **`--eta`** (default: `0.5`): Occupancy bias penalty on the marginal
 log-likelihood.
 
-`--rho`, `--beta-prime`, `--beta`, and `--emission-lambda` parameterize priors;
+Note that, `--rho`, `--beta-prime`, `--beta`, and `--emission-lambda` parameterize priors;
 they do not impose strong expectations on their own.
 
 **Note:** If your data lacks strong MSC deviations, you may see few or no
 *flagged trees. Conversely, an incorrect or unreliable species tree can produce
 *too many flags. Adjust hyperparameters to match the resolution you need.
 
-A high-level and generic suggestion is starting with the defaults and running
+A high-level and generic suggestion is to start with the defaults and run
 Phlag with varying hyperparameters (in a sensible range), and focusing on
 regions that are consistently detected.
 
 You may want to aim for a more granular structure and break up large contiguous
-blocks, if so, try lowering `--rho` or increasing `--beta-prime` (or `--beta` if
+blocks. If so, try lowering `--rho` or increasing `--beta-prime` (or `--beta` if
 you set it explicitly). To tune how strongly the model favors the anomalous
 state, adjust `--eta`.
 
