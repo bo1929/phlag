@@ -2,14 +2,20 @@
 
 **Phlag** detects and flags phylogenetic anomalies across the genome.
 
-Given a species tree and a sequence of gene trees, Phlag aims to detect strong deviations from the multi-species coalescent (MSC) process using quadripartition quartet scores (QQS) and a hidden Markov model (HMM).
+Given a species tree and a sequence of gene trees, Phlag detects strong
+deviations from the multi-species coalescent (MSC) using quadripartition quartet
+scores (QQS) and a hidden Markov model (HMM).
 
-The input is a sequence of gene trees, ideally sampled uniformly across a chromosome.
-The expected output is a set of "flagged" subsequences corresponding to model violations (e.g., introgression, recombination suppression, or dramatic changes in effective population size) and an updated species tree with branch lengths in coalescent units (CU), estimated by ignoring the flagged gene trees.
+The input is a sequence of gene trees, ideally sampled uniformly along a
+chromosome. The output is a set of flagged subsequences corresponding to model
+violations (e.g., introgression, recombination suppression, or dramatic changes
+in effective population size), plus an updated species tree with branch lengths
+in coalescent units (CU), estimated after excluding flagged gene trees.
 
 ## Installation
 
 Phlag requires Python 3.9.
+
 ```shell
 micromamba create -n phlag python=3.9 -y
 micromamba activate phlag
@@ -32,24 +38,29 @@ pip install .
 
 ## Quickstart with a toy example
 
-The `test/` directory contains a simulated dataset based on a Neoaves species tree with 191 taxa.
-We use this to demonstrate how Phlag detects a genomic region where the MSC model is violated.
+The `test/` directory contains a simulated dataset based on a Neoaves species
+tree with 191 taxa. We use it to demonstrate how Phlag detects a genomic region
+where the MSC model is violated.
 
-Suppose, we have a species tree (`test/neoaves.nwk`) and a sequence of 1500 gene trees (`test/emission.gtrees`), ordered along a chromosome.
-This gene tree sequence is a mixture of two coalescent with recombination (CwR) processes:
-- **Background (default)**: Gene trees simulated under the standard MSC with the original species tree parameters.
-- **Anomalous**: Gene trees simulated with a 10-fold increase in the effective population size for the branch leading to the *Charadriiformes* clade (labeled `N159`).
+We have a species tree (`test/neoaves.nwk`) and 1500 gene trees
+(`test/emission.gtrees`) ordered along a chromosome. The sequence is a mixture
+of two coalescent-with-recombination (CwR) processes:
 
-Out of 1500 consecutive gene trees, 150 (10%) come from the anomalous process.
-These occupy a single contiguous block at indices [913, 1062] (0-indexed, inclusive).
-Our goal is to detect this region using Phlag.
+- **Background**: Gene trees simulated under the standard MSC with the original species tree parameters.
+- **Anomalous**: Gene trees simulated with a 10-fold increase in effective population size on the branch leading to the *Charadriiformes* clade (labeled `N159`).
+
+Out of the 1500 consecutive gene trees, 150 (10%) come from the anomalous process.
+They form one contiguous block at indices [913, 1063) (0-indexed).
+The goal is to recover that region with Phlag.
 
 ### Input
-* **Species tree** (`-s`): A Newick species tree with labeled internal nodes.
-* **Gene trees** (`-g`): One Newick tree per line, ordered along the genome (not necessarily with labeled internal nodes).
-* **Focal edge(s)** (`-e`): The label of the internal node(s) defining the edge(s) to target. In this example, the clade under suspicion is labeled `N159`.
+
+- **Species tree** (`-s`): A Newick species tree with labeled internal nodes.
+- **Gene trees** (`-g`): One Newick tree per line, ordered along the genome (internal nodes need not be labeled).
+- **Focal edge(s)** (`-e`): Label(s) of internal node(s) defining the edge(s) to target. In this example, the clade under suspicion is `N159`.
 
 ### Usage
+
 ```shell
 phlag \
   -s test/neoaves.nwk \
@@ -60,35 +71,64 @@ phlag \
   -o results-neoaves-N159.txt
 ```
 
-The quadripartition quartet scores for this dataset are precomputed and stored in `test/qqs.tsv`.
-Reading them with `--read-qqs-path` avoids recomputing QQS values from scratch.
-If you omit this flag, QQS values will be computed on the fly, which adds to the running time.
-You can also precompute and save QQS values for later runs (e.g., with different focal edges or hyperparameters) using `--write-qqs-path`.
+Quadripartition quartet scores for this dataset are precomputed in
+`test/qqs.tsv`. Using `--read-qqs-path` avoids recomputing QQS from scratch. If
+you omit this flag, QQS values are computed on the fly, which increases runtime.
+You can precompute and save QQS for later runs (e.g., different focal edges or
+hyperparameters) with `--write-qqs-path`.
 
-For the full list of options, run `phlag --help`.
+For all options, run `phlag --help`.
 
 ### Key hyperparameters
 
-- **`--rho`** (default: `0.9`): Controls sensitivity (reduce to flag more regions); the interpretation is the expected portion of gene trees generated under MSC.
-- **`--beta-prime`** and **`--beta`**: Control how contiguous flagged intervals are expected to be (reduce either to merge nearby flags into longer runs). Phlag uses `--beta-prime` by default and sets the effective contiguity prior to `beta_prime` x number of gene trees, so the prior scales with input size. With the default `beta_prime = 0.0025`, 2000 gene trees yield an effective beta of 5 (about five contiguous anomalous regions expected genome-wide). `--beta-prime` must lie in `(0, 0.5)`. Pass **`--beta`** to override scaling with a fixed value (e.g., `--beta 5` for the legacy behavior regardless of how many gene trees you supply).
-- **`--emission-lambda`** (default: `1.0`): Controls expected deviation of anomalies from MSC.
-- **`--eta`** (default: `0.5`): Occupancy bias penalty on the marginal log-likelihood.
+- **`--rho`** (default: `0.9`): Controls sensitivity; lower values flag more
+regions. Interpreted as the expected fraction of gene trees generated under the
+MSC.
 
-`--rho`, `--beta-prime`, `--beta`, and `--emission-lambda` parameterize priors and they do not imply strong expecatations.
+- **`--beta-prime`** and **`--beta`**: Control how contiguous flagged intervals
+are expected to be. Lower values encourage merging nearby flags into longer
+runs.
 
-**Note**: If your data lacks strong deviations from the MSC, you may see few or no flagged trees.
-Conversely, an incorrect or unreliable species tree may result in too many flagged gene trees.
-In such cases, you can adjust the hyperparameters to detect anomalies at the resolution you desire.
+  By default, Phlag uses **`--beta-prime`** and sets the effective contiguity
+  prior to `beta_prime` times the number of gene trees, so the prior scales with
+  input size. The default `beta_prime = 0.0025` gives an effective beta of 5 for
+  2000 gene trees (roughly five contiguous anomalous regions expected
+  genome-wide). Valid values for `--beta-prime` are in `(0, 0.5)`.
 
-A high-level and generic suggestion is running Phlag with varying hyperparameters (in a sensible range tested in the paper), and focusing on regions that are consistently detected. You may want to increase `--expected-num-anomalies` if you are looking for more granular results or if large contigous chunks are flagged. Similarly, `--expected-anamoly-proportion` can be varied between 0 and 0.5 to change to prior on the stationary distribution. 
+  Pass **`--beta`** to use a fixed contiguity prior instead (e.g., `--beta 5`
+  for the legacy behavior, independent of the number of gene trees).
+
+- **`--emission-lambda`** (default: `1.0`): Controls the expected deviation of
+anomalies from the MSC.
+
+- **`--eta`** (default: `0.5`): Occupancy bias penalty on the marginal
+log-likelihood.
+
+`--rho`, `--beta-prime`, `--beta`, and `--emission-lambda` parameterize priors;
+they do not impose strong expectations on their own.
+
+**Note:** If your data lacks strong MSC deviations, you may see few or no
+*flagged trees. Conversely, an incorrect or unreliable species tree can produce
+*too many flags. Adjust hyperparameters to match the resolution you need.
+
+A high-level and generic suggestion is starting with the defaults and running
+Phlag with varying hyperparameters (in a sensible range), and focusing on
+regions that are consistently detected.
+
+You may want to aim for a more granular structure and break up large contiguous
+blocks, if so, try lowering `--rho` or increasing `--beta-prime` (or `--beta` if
+you set it explicitly). To tune how strongly the model favors the anomalous
+state, adjust `--eta`.
 
 ### Output
+
 The output file contains:
+
 - **Header lines** (prefixed with `#`):
-    * The invoked command.
-    * The initial species tree with branch lengths in CU, estimated using the entire gene tree sequence.
-    * The labels and final branch lengths of the focal edges.
-    * The final species tree with branch lengths re-estimated after excluding the flagged gene trees.
-    * The final focal edge lengths and distances between the emission distributions of the two HMM states for each focal edge.
-- **State labels**: A comma-separated sequence where `1` = flagged (anomalous) and `0` = MSC-compliant. Gene trees excluded due to missing data are labeled `nan`.
-- **Posterior probabilities**: The smoothed posterior probability of being in the anomalous state for each gene tree.
+  - The invoked command.
+  - The initial species tree with branch lengths in CU, estimated from the full gene tree sequence.
+  - Labels and final branch lengths of the focal edges.
+  - The final species tree with branch lengths re-estimated after excluding flagged gene trees.
+  - Final focal edge lengths and distances between emission distributions of the two HMM states for each focal edge.
+- **State labels**: A comma-separated sequence where `1` = flagged (anomalous), `0` = MSC-compliant, and `nan` = excluded due to missing data.
+- **Posterior probabilities**: Smoothed posterior probability of the anomalous state for each gene tree.
