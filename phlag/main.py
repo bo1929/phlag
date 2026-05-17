@@ -401,7 +401,7 @@ def parse_arguments():
         type=float,
         default=None,
         help=(
-            "Hyperparameter to control contiguity of intervals, reduce to increase contiguity (default: 5; overrides --beta-prime when set)"
+            "Hyperparameter to control contiguity of flagged regions, reduce to increase contiguity (default: 5; overrides --beta-prime when set)"
         ),
     )
     hmm_group.add_argument(
@@ -410,7 +410,7 @@ def parse_arguments():
         default=BETA_PRIME,
         dest="beta_prime",
         help=(
-            "Scale factor beta; effective beta is this times the number of gene trees when (default: {BETA_PRIME}; must be in (0, 0.5))"
+            "Scale factor for beta; effective beta is this times the number of gene trees when (default: {BETA_PRIME}; must be in (0, 0.5))"
         ),
     )
     hmm_group.add_argument(
