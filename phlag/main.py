@@ -23,8 +23,7 @@ BLEN_MIN = 1e-6
 E_STEP_EPS = 0.0001
 PSI_EPS = 0.001
 NUM_STATES = 2
-MAX_INCIDENT_LENGTH = 2.0
-BETA_PRIME = 0.0025
+BETA_PRIME = 0.001
 INITIAL_PROBS = jnp.array([1.0000, 0.0000], dtype=jnp.float32)
 
 
@@ -39,6 +38,7 @@ class Phlag:
         self.st.encode_bipartitions()
         self.compute_qqs()
         self.update_edge_lengths(jnp.ones(self.n_gt))
+        self.apply_auto_expansion()
         self.configure_emissions()
         self.compute_emissions()
         self.initialize_hmm()
@@ -46,23 +46,11 @@ class Phlag:
 
     def read_trees(self):
         self.taxa = utils.get_canonical_taxon_namespace(self.args.species_tree)
-        self.st = dendropy.Tree.get(
-            path=self.args.species_tree,
-            schema="newick",
-            preserve_underscores=True,
-            taxon_namespace=self.taxa,
-        )
+        self.st = dendropy.Tree.get(path=self.args.species_tree, schema="newick", preserve_underscores=True, taxon_namespace=self.taxa)
         self.st.suppress_unifurcations()
         self.st.collapse_basal_bifurcation()
-        self.st.encode_bipartitions(
-            collapse_unrooted_basal_bifurcation=True, suppress_unifurcations=True
-        )
-        self.gt_l = dendropy.TreeList.get(
-            path=self.args.gene_trees,
-            schema="newick",
-            preserve_underscores=True,
-            taxon_namespace=self.taxa,
-        )
+        self.st.encode_bipartitions(collapse_unrooted_basal_bifurcation=True, suppress_unifurcations=True)
+        self.gt_l = dendropy.TreeList.get(path=self.args.gene_trees, schema="newick", preserve_underscores=True, taxon_namespace=self.taxa)
         self.n_gt = len(self.gt_l)
         self.mask = jnp.ones(self.n_gt, dtype=bool)
         self.lbl_to_nd = utils.map_label_to_node(self.st)
@@ -75,9 +63,7 @@ class Phlag:
         if self.args.beta <= 0:
             raise ValueError(f"--beta must be positive, got {self.args.beta}")
         if not (0 < self.args.beta_prime < 0.5):
-            raise ValueError(
-                f"--beta-prime must be in (0, 0.5), got {self.args.beta_prime}"
-            )
+            raise ValueError(f"--beta-prime must be in (0, 0.5), got {self.args.beta_prime}")
         if not (0 < self.args.eta < 1):
             raise ValueError(f"--eta must be in (0, 1), got {self.args.eta}")
         if self.args.n_iters < 1:
@@ -87,21 +73,54 @@ class Phlag:
         for lbl in self.args.focal_edges:
             if lbl not in self.lbl_to_nd:
                 raise ValueError(f"Focal edge label '{lbl}' not found in species tree")
+        if self.args.expand_threshold < 0:
+            raise ValueError(f"--expand-threshold must be non-negative, got {self.args.expand_threshold}")
 
     def determine_focal_edges(self):
         if self.args.focal_edges:
             self.focal_edges = []
+            self.expand_candidates = []
             for lbl in self.args.focal_edges:
                 edge = utils.focal_edge_from_label(self.st, lbl, self.lbl_to_nd)
-                if self.args.expand_edges:
-                    self.focal_edges.extend(
-                        incident
-                        for incident in utils.get_incident_edges(self.st, edge, self.lbl_to_nd)
-                        if incident.length < MAX_INCIDENT_LENGTH or incident == edge
-                    )
-                else:
-                    self.focal_edges.append(edge)
+                self.focal_edges.append(edge)
+                self.expand_candidates.append((lbl, edge, self.adjacent_branches(lbl)))
+            # stable de-duplication: an edge may be reached from several labels
+            self.focal_edges = list(dict.fromkeys(self.focal_edges))
         self.num_edges = len(self.focal_edges)
+
+    def apply_auto_expansion(self):
+        self.auto_expand_log = []
+        added = []
+        for lbl, edge, neighbours in self.expand_candidates:
+            est = edge.length if edge.length is not None else 0.0
+            if est >= self.args.expand_threshold:
+                added.extend(neighbours)
+                self.auto_expand_log.append(f"# expand: {lbl} estimated {est:.4f} CU >= {self.args.expand_threshold} -> expanded")
+            else:
+                self.auto_expand_log.append(f"# expand: {lbl} estimated {est:.4f} CU < {self.args.expand_threshold} -> not expanded")
+        if added:
+            self.focal_edges = list(dict.fromkeys(self.focal_edges + added))
+            self.num_edges = len(self.focal_edges)
+
+    def adjacent_branches(self, lbl):
+        """Neighbour branches of the focal branch, added when the estimate exceeds --expand-threshold."""
+
+        def is_valid(n):
+            return n is not None and not n.is_leaf() and n.label is not None and n.edge is not None
+
+        node = self.lbl_to_nd[lbl]
+        out = []
+        parent = node.parent_node
+        if is_valid(parent):
+            if parent.parent_node is not None:  # skip the seed edge
+                out.append(parent.edge)
+            for ch in parent.child_nodes():
+                if ch is not node and is_valid(ch):
+                    out.append(ch.edge)
+        for ch in node.child_nodes():
+            if is_valid(ch):
+                out.append(ch.edge)
+        return out
 
     def transform_qqs(self, qqs):
         if self.ilr_transform:
@@ -116,6 +135,8 @@ class Phlag:
         self.ilr_transform = self.args.ilr_transform
 
     def compute_emissions(self):
+        self.focal_edges = [e for e in self.focal_edges if e in self.edge_to_qqs and self.edge_to_qqs[e].shape[0] > 0]
+        self.num_edges = len(self.focal_edges)
         Y = []
         for edge in self.focal_edges:
             Y.append(self.edge_to_qqs[edge])
@@ -133,11 +154,11 @@ class Phlag:
         self.output_str = f"# {' '.join(sys.argv)}"
         self.output_str += "\n# Initial tree: " + self.st.as_string(schema="newick")
         self.output_str += "# Initial focal edge lengths: " + ", ".join(self.focal_edge_lengths())
+        for line in getattr(self, "auto_expand_log", []):
+            self.output_str += "\n" + line
 
     def compute_output(self):
-        emission_divergence_str = ", ".join(
-            list(map(lambda x: str(x), self.hmm.state_emission_divergence(self.params).tolist()))
-        )
+        emission_divergence_str = ", ".join(list(map(lambda x: str(x), self.hmm.state_emission_divergence(self.params).tolist())))
         most_likely_states = np.full(self.mask.shape, -1)
         most_likely_states[self.mask] = self.hmm.most_likely_states(self.params, self.Y)
         ps = np.full(self.mask.shape, np.nan)
@@ -145,12 +166,8 @@ class Phlag:
         self.output_str += "\n# Final tree: " + self.st.as_string(schema="newick")
         self.output_str += "# Final focal edge lengths: " + ", ".join(self.focal_edge_lengths())
         self.output_str += "\n# State divergence: " + emission_divergence_str
-        self.output_str += "\n" + ",".join(
-            map(lambda x: str(x) if x >= 0 else "nan", most_likely_states.astype(int).tolist())
-        )
-        self.output_str += "\n" + ",".join(
-            map(lambda x: str(x), jnp.round(ps, decimals=3).tolist())
-        )
+        self.output_str += "\n" + ",".join(map(lambda x: str(x) if x >= 0 else "nan", most_likely_states.astype(int).tolist()))
+        self.output_str += "\n" + ",".join(map(lambda x: str(x), jnp.round(ps, decimals=3).tolist()))
 
     def simulate_emission_prob(self):
         # Obtain the simulated emissions from the species tree
@@ -168,17 +185,28 @@ class Phlag:
             self.read_qqs(self.args.read_qqs_path)
 
     def read_qqs(self, path):
+        label_to_qqs = {}
         with open(path, "r") as f:
             for i, line in enumerate(f):
                 if i == 0:
                     continue
                 values = line.strip().split("\t")
                 lbl = values[0]
-                edge = utils.focal_edge_from_label(self.st, lbl, self.lbl_to_nd)
                 y = int(values[1]) - 1
                 freq_y = jnp.array([float(x) for x in values[2:]])
-                qqs_freq = self.edge_to_qqs.get(edge, jnp.zeros((freq_y.shape[0], 3)))
-                self.edge_to_qqs[edge] = qqs_freq.at[:, y].set(freq_y)
+                qqs_freq = label_to_qqs.get(lbl, jnp.zeros((freq_y.shape[0], 3)))
+                label_to_qqs[lbl] = qqs_freq.at[:, y].set(freq_y)
+
+        self.edge_to_qqs = {}
+        for lbl, qqs in label_to_qqs.items():
+            edge = utils.focal_edge_from_label(self.st, lbl, self.lbl_to_nd)
+            if edge not in self.edge_to_qqs:  # first wins: never overwrite silently
+                self.edge_to_qqs[edge] = qqs
+
+        for lbl in self.args.focal_edges or []:
+            if lbl in label_to_qqs:
+                edge = utils.focal_edge_from_label(self.st, lbl, self.lbl_to_nd)
+                self.edge_to_qqs[edge] = label_to_qqs[lbl]
 
     def write_qqs(self, path):
         with open(path, "w") as f:
@@ -214,14 +242,6 @@ class Phlag:
             edge.length = max(bl, BLEN_MIN)
 
     def initialize_emission_prob(self):
-        def inverse_dirichlet(gamma=1.0, A=1.0, eps=1e-8):
-            p = self.simulated_emission_prob
-            # alpha = (p + eps) ** (-gamma)
-            # alpha = alpha / alpha.sum() * A
-            # prior = tfd.Dirichlet(alpha)
-            prior = tfd.Dirichlet(A * (1 - p) / (p.shape[-1] - 1))
-            return prior.sample(seed=jrand.PRNGKey(0))
-
         def random_dirichlet(gamma=1.0):
             prior = tfd.Dirichlet(self.gamma * jnp.ones(self.num_classes))
             return prior.sample(seed=jrand.PRNGKey(0), sample_shape=(self.num_edges))
@@ -231,12 +251,9 @@ class Phlag:
             alt_emission_probs = random_dirichlet(self.gamma)
         elif self.args.emission_initialization == "simulation":
             alt_emission_probs = self.simulated_emission_prob
-        elif self.args.emission_initialization == "inverse":
-            alt_emission_probs = inverse_dirichlet()
         else:
-            raise NotImplementedError(
-                f"Initial emission probabilities via {self.args.emission_initialization} is not implemented"
-            )
+            raise NotImplementedError(f"Initial emission probabilities via {self.args.emission_initialization} is not implemented")
+
         return jnp.stack([self.simulated_emission_prob, alt_emission_probs], axis=0)
 
     def initialize_hmm(self):
@@ -255,16 +272,12 @@ class Phlag:
         self.psi = self.psi.at[-1, -1].set(self.alpha_1)
         self.psi = self.psi.at[-1, 0].set(self.beta_1)
         if np.any(self.psi < 0):
-            raise ValueError(
-                "Invalid transition matrix; either beta<0 or beta/rho > # of gene trees"
-            )
+            raise ValueError("Invalid transition matrix; either beta<0 or beta/rho > # of gene trees")
         self.occupancy_bias = jnp.zeros(NUM_STATES)
-        self.occupancy_bias = self.occupancy_bias.at[-1].set(
-            -jnp.log((1 - self.args.eta) / (self.args.eta))
+        self.occupancy_bias = self.occupancy_bias.at[-1].set(-jnp.log((1 - self.args.eta) / (self.args.eta)))
+        self.emission_parameterization = (hmm.EmissionParam(self.args.emission_parameterization),) + tuple(
+            hmm.EmissionParam("free") for _ in range(NUM_STATES - 1)
         )
-        self.emission_parameterization = (
-            hmm.EmissionParam(self.args.emission_parameterization),
-        ) + tuple(hmm.EmissionParam("free") for _ in range(NUM_STATES - 1))
         self.hmm = hmm.PhlagHMM(
             NUM_STATES,
             self.num_edges,
@@ -276,15 +289,11 @@ class Phlag:
             transition_concentration=self.psi,
             occupancy_bias=self.occupancy_bias,
         )
-        self.params, self.props = self.hmm.initialize(
-            initial_probs=INITIAL_PROBS, emission_probs=self.initialize_emission_prob()
-        )
+        self.params, self.props = self.hmm.initialize(initial_probs=INITIAL_PROBS, emission_probs=self.initialize_emission_prob())
         self.props.transitions.transition_matrix.trainable = True
         self.props.emissions.probs.trainable = True
         self.props.initial.probs.trainable = True
-        self.hmm.initialize_m_step_state(
-            self.params, self.props, emissions_m_step_state=self.simulated_emission_prob
-        )
+        self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
         self.n_iters = self.args.n_iters
         self.increment_steps = self.args.increment_steps
 
@@ -304,17 +313,9 @@ class Phlag:
     def run(self):
         # jnp.set_printoptions(threshold=sys.maxsize)
         for i in tqdm(range(self.n_iters)):
-            self.params, log_probs = self.hmm.fit_em(
-                self.params,
-                self.props,
-                self.Y,
-                num_iters=(i + 1) * self.increment_steps + 1,
-                verbose=False,
-            )
+            self.params, log_probs = self.hmm.fit_em(self.params, self.props, self.Y, num_iters=(i + 1) * self.increment_steps + 1, verbose=False)
             self.propose_simulated_emission_prob()
-            self.hmm.initialize_m_step_state(
-                self.params, self.props, emissions_m_step_state=self.simulated_emission_prob
-            )
+            self.hmm.initialize_m_step_state(self.params, self.props, emissions_m_step_state=self.simulated_emission_prob)
         self.compute_output()
 
     def save_output(self):
@@ -323,56 +324,18 @@ class Phlag:
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Phlag: Detecting genomic regions with unexplained phylogenetic heterogeneity"
-    )
+    parser = argparse.ArgumentParser(description="Phlag: Detecting genomic regions with unexplained phylogenetic heterogeneity")
 
+    parser.add_argument("-s", "--species-tree", type=pathlib.Path, required=True, help="Path to species tree in Newick format")
+    parser.add_argument("-g", "--gene-trees", type=pathlib.Path, required=True, help="Path to file for ordered gene trees (one Newick tree per line)")
+    parser.add_argument("-o", "--output-file", type=pathlib.Path, required=True, help="Path to save the output")
+    parser.add_argument("--n-replicates", type=int, default=2000, help="Number of simulation replicates for prior updates (default: 2000)")
+    parser.add_argument("-L", "--n-iters", type=int, default=5, help="Number of (outer) iterations (default: 5)")
+    parser.add_argument("-l", "--increment-steps", type=int, default=50, help="Increment for inner EM iterations (default: 50)")
     parser.add_argument(
-        "-s",
-        "--species-tree",
-        type=pathlib.Path,
-        required=True,
-        help="Path to species tree in Newick format",
+        "-v", "--verbosity", type=int, default=1, choices=[0, 1, 2, 3], help="Verbosity level: 0=quiet, 1=normal, 2=verbose, 3=debug (default: 1)"
     )
-    parser.add_argument(
-        "-g",
-        "--gene-trees",
-        type=pathlib.Path,
-        required=True,
-        help="Path to file for ordered gene trees (one Newick tree per line)",
-    )
-    parser.add_argument(
-        "-o", "--output-file", type=pathlib.Path, required=True, help="Path to save the output"
-    )
-    parser.add_argument(
-        "--n-replicates",
-        type=int,
-        default=2000,
-        help="Number of simulation replicates for prior updates (default: 2000)",
-    )
-    parser.add_argument(
-        "-L", "--n-iters", type=int, default=5, help="Number of (outer) iterations (default: 5)"
-    )
-    parser.add_argument(
-        "-l",
-        "--increment-steps",
-        type=int,
-        default=50,
-        help="Increment for inner EM iterations (default: 50)",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbosity",
-        type=int,
-        default=1,
-        choices=[0, 1, 2, 3],
-        help="Verbosity level: 0=quiet, 1=normal, 2=verbose, 3=debug (default: 1)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Read the data and compute/read/write the QQS values, and do nothing else.",
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Read the data and compute/read/write the QQS values, and do nothing else.")
     parser.add_argument(
         "-e",
         "--focal-edges",
@@ -384,25 +347,23 @@ def parse_arguments():
                     Unrooted: edge giving the most balanced bipartition.""",
     )
     parser.add_argument(
-        "--expand-edges",
-        action="store_true",
-        help="Incorporate the signal from neighboring/incident edges.",
+        "--expand-threshold",
+        type=float,
+        default=1.0,
+        help="""Estimated branch length in CU at or above which the
+                neighbouring branches are added (default: 1.0).
+                Set to 0 to always expand, or to inf to never expand.""",
     )
 
     hmm_group = parser.add_argument_group("HMM parameters")
     hmm_group.add_argument(
-        "--rho",
-        type=float,
-        default=0.9,
-        help="Hyperparameter to control sensitivity, reduce to increase sensitivity (default 0.9)",
+        "--rho", type=float, default=0.85, help="Hyperparameter to control sensitivity, reduce to increase sensitivity (default 0.85)"
     )
     hmm_group.add_argument(
         "--beta",
         type=float,
         default=None,
-        help=(
-            "Hyperparameter to control contiguity of flagged regions, reduce to increase contiguity (default: 5; overrides --beta-prime when set)"
-        ),
+        help=("Hyperparameter to control contiguity of flagged regions, reduce to increase contiguity (overrides --beta-prime when set)"),
     )
     hmm_group.add_argument(
         "--beta-prime",
@@ -410,28 +371,15 @@ def parse_arguments():
         default=BETA_PRIME,
         dest="beta_prime",
         help=(
-            "Scale factor for beta; effective beta is this times the number of gene trees when (default: {BETA_PRIME}; must be in (0, 0.5))"
+            "Scale factor for beta; effective beta is this times the number of "
+            "gene trees, valid range is (0, 0.5) (default: 0.001, which is 1 per 1000 gene trees)"
         ),
     )
     hmm_group.add_argument(
-        "--emission-lambda",
-        "--lambda",
-        type=float,
-        default=1.0,
-        help="Hyperparameter to control deviation of anomalies from MSC (default: 1.0)",
+        "--emission-lambda", "--lambda", type=float, default=1.0, help="Hyperparameter to control deviation of anomalies from MSC (default: 1.0)"
     )
-    hmm_group.add_argument(
-        "--initial-probs-concentration",
-        type=float,
-        default=1.1,
-        help="Initial probabilities concentration (default: 1.1)",
-    )
-    hmm_group.add_argument(
-        "--emission-concentration",
-        type=float,
-        default=1.1,
-        help="Emission prior concentration (default: 1.1)",
-    )
+    hmm_group.add_argument("--initial-probs-concentration", type=float, default=1.1, help="Initial probabilities concentration (default: 1.1)")
+    hmm_group.add_argument("--emission-concentration", type=float, default=1.1, help="Emission prior concentration (default: 1.1)")
     hmm_group.add_argument(
         "--eta",
         "--occupancy-bias",
@@ -443,10 +391,11 @@ def parse_arguments():
     hmm_group.add_argument(
         "--emission-initialization",
         type=str.lower,
-        default="random",
-        choices=["random", "inverse", "simulation"],
+        default="simulation",
+        choices=["random", "simulation"],
         help="""The default state is initialized based on MSC-based simulations.
-                    The alternative state is initialized from inverse, random, or simulation.""",
+                    The alternative state is initialized randomly or based on simulations
+                    (default: simulation)""",
     )
     hmm_group.add_argument(
         "--emission-parameterization",
@@ -458,19 +407,11 @@ def parse_arguments():
     )
 
     discr_group = parser.add_argument_group("Discretization and emission parameters")
-    discr_group.add_argument(
-        "--ilr-transform",
-        action="store_true",
-        help="Apply isometric log-ratio transformation on QQS values",
-    )
+    discr_group.add_argument("--ilr-transform", action="store_true", help="Apply isometric log-ratio transformation on QQS values")
 
     io_group = parser.add_argument_group("I/O options")
-    io_group.add_argument(
-        "--write-qqs-path", type=pathlib.Path, help="Write QQS values to the given filepath"
-    )
-    io_group.add_argument(
-        "--read-qqs-path", type=pathlib.Path, help="Read QQS values from the given filepath"
-    )
+    io_group.add_argument("--write-qqs-path", type=pathlib.Path, help="Write QQS values to the given filepath")
+    io_group.add_argument("--read-qqs-path", type=pathlib.Path, help="Read QQS values from the given filepath")
 
     return parser.parse_args()
 
